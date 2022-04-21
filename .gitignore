@@ -1,0 +1,7 @@
+debug/
+target/
+
+# rustfmt backup files
+**/*.rs.bk
+
+.idea/
