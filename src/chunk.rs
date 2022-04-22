@@ -4,7 +4,7 @@ use std::fmt::Formatter;
 /// bytecode instructions for the rlox VM
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
 pub enum OpCode {
-    OpReturn = 0
+    OpReturn = 0,
 }
 
 impl TryFrom<u8> for OpCode {
@@ -13,7 +13,7 @@ impl TryFrom<u8> for OpCode {
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
             0 => Ok(OpCode::OpReturn),
-            _ => Err("Unknown OpCode")
+            _ => Err("Unknown OpCode"),
         }
     }
 }
@@ -38,7 +38,6 @@ impl Drop for Chunk {
 }
 
 impl Chunk {
-
     pub fn new() -> Chunk {
         Chunk { code: Vec::new() }
     }

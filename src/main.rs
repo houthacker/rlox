@@ -3,7 +3,7 @@ mod chunk;
 #[cfg(feature = "rlox_debug")]
 mod debug;
 
-use chunk::{ Chunk, OpCode };
+use chunk::{Chunk, OpCode};
 
 fn main() {
     let mut chunk = Chunk::new();
