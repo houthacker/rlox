@@ -1,4 +1,6 @@
 mod chunk;
+mod compiler;
+mod scanner;
 mod value;
 mod vm;
 
@@ -6,19 +8,64 @@ mod vm;
 mod debug;
 
 use chunk::{Chunk, OpCode};
-use vm::VM;
+use compiler::Compiler;
+use std::env;
+use std::fs;
+use std::io;
+use vm::{InterpretResult, VM};
 
 fn main() {
-    let mut chunk = Chunk::new();
+    let args: Vec<String> = env::args().collect();
     let mut vm = VM::new();
 
-    chunk.write_constant(1.2, 123);
-    chunk.write(OpCode::OpNegate as u8, 123);
-    chunk.write(OpCode::OpReturn as u8, 120);
+    let argc = args.len();
+    if argc == 1 {
+        repl(&mut vm);
+        println!("Done")
+    } else if argc == 2 {
+        run_file(&mut vm, &args[1]);
+    } else {
+        eprintln!("Usage: rlox [path]");
+        std::process::exit(64);
+    }
+}
 
-    // #[cfg(feature = "rlox_debug")]
-    debug::disassemble_chunk(&chunk, "test chunk");
+fn repl(vm: &mut VM) {
+    loop {
+        print!("rlox> ");
 
-    vm.interpret(&mut chunk);
-    println!("Done")
+        let mut line = String::new();
+        match io::stdin().read_line(&mut line) {
+            Ok(len) => {
+                interpret(vm, &line);
+            }
+            Err(error) => {
+                eprintln!("Could not read from stdin: {}", error);
+            }
+        }
+    }
+}
+
+fn run_file(vm: &mut VM, path: &String) {
+    match fs::read_to_string(path) {
+        Ok(contents) => {
+            let result = interpret(vm, &contents);
+
+            match result {
+                InterpretResult::CompileError => std::process::exit(65),
+                InterpretResult::RuntimeError => std::process::exit(70),
+                InterpretResult::Ok => {}
+            }
+        }
+        Err(error) => {
+            eprintln!("Could not read file {}: {}", path, error);
+        }
+    }
+}
+
+fn interpret(vm: &mut VM, source: &String) -> InterpretResult {
+    // TODO move to VM
+    let mut compiler = Compiler::new();
+    compiler.compile(source);
+    InterpretResult::Ok
 }
