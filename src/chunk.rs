@@ -1,4 +1,4 @@
-use crate::value::Value;
+use crate::value::{Value, ValueType, U};
 use std::fmt::{Display, Formatter};
 
 pub type InstructionIndex = usize;
@@ -42,24 +42,18 @@ impl TryFrom<u8> for OpCode {
 }
 
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct Line {
     pub no: LineNumber,
     pub references: usize,
 }
 
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
+#[derive(Clone)]
 pub struct Chunk {
     pub code: Vec<u8>,
     pub lines: Vec<Line>,
     pub constants: Vec<Value>,
-}
-
-#[cfg(feature = "rlox_debug")]
-impl Drop for Chunk {
-    fn drop(&mut self) {
-        println!("Dropping Chunk");
-    }
 }
 
 impl Chunk {
@@ -179,8 +173,8 @@ impl Chunk {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
+    use crate::number_val;
 
     #[test]
     fn chunk_create() {
@@ -215,7 +209,7 @@ mod tests {
     fn chunk_write_constant() {
         let mut chunk = Chunk::new();
 
-        chunk.write_constant(1.337, 2);
+        chunk.write_constant(number_val!(1.337), 2);
         assert_eq!(chunk.lines.len(), 1);
         assert_eq!(
             chunk.lines.get(0),
@@ -230,7 +224,7 @@ mod tests {
         assert_eq!(chunk.code.get(1), Some(&0));
 
         assert_eq!(chunk.constants.len(), 1);
-        assert_eq!(chunk.constants.get(0), Some(&1.337));
+        assert_eq!(chunk.constants.get(0), Some(&number_val!(1.337)));
     }
 
     #[test]
@@ -239,7 +233,7 @@ mod tests {
         let max = 257;
 
         for i in 1..=max {
-            chunk.write_constant(1.337, i);
+            chunk.write_constant(number_val!(1.337), i);
         }
 
         assert_eq!(chunk.code.len(), 516);

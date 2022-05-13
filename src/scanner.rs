@@ -1,5 +1,7 @@
+use crate::chunk::LineNumber;
+
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
-#[derive(PartialEq)]
+#[derive(Copy, Clone, PartialEq)]
 pub enum TokenType {
     // Single-character tokens
     LeftParen,
@@ -52,22 +54,35 @@ pub enum TokenType {
     EOF,
 }
 
-pub struct Token<'a> {
+#[cfg_attr(feature = "rlox_debug", derive(Debug))]
+pub struct Token {
     pub kind: TokenType,
-    pub lexeme: &'a str,
-    pub line: u32,
-}
-pub struct Scanner<'a> {
-    source: &'a str,
-    start: usize,
-    current: usize,
-    line: u32,
+    pub lexeme: String,
+    pub line: LineNumber,
 }
 
-impl Scanner<'_> {
-    pub fn new(source: &String) -> Scanner {
-        Scanner {
-            source: &source[..],
+impl Clone for Token {
+    fn clone(&self) -> Self {
+        Self {
+            kind: self.kind,
+            lexeme: self.lexeme.clone(),
+            line: self.line,
+        }
+    }
+}
+
+#[cfg_attr(feature = "rlox_debug", derive(Debug))]
+pub struct Scanner {
+    source: String,
+    start: usize,
+    current: usize,
+    line: LineNumber,
+}
+
+impl Scanner {
+    pub fn new(source: String) -> Self {
+        Self {
+            source,
             start: 0,
             current: 0,
             line: 1,
@@ -82,14 +97,14 @@ impl Scanner<'_> {
         }
 
         let c = self.advance();
-        if self.is_alpha(c) {
+        if Self::is_alpha(c) {
             return self.identifier();
         }
-        if self.is_digit(c) {
+        if Self::is_digit(c) {
             return self.number();
         }
 
-        return match c {
+        match c {
             "(" => self.make_token(TokenType::LeftParen),
             ")" => self.make_token(TokenType::RightParen),
             "{" => self.make_token(TokenType::LeftBrace),
@@ -101,24 +116,40 @@ impl Scanner<'_> {
             "+" => self.make_token(TokenType::Plus),
             "/" => self.make_token(TokenType::Slash),
             "*" => self.make_token(TokenType::Star),
-            "!" => self.make_token_if(self.match_next("="), TokenType::BangEqual, TokenType::Bang),
-            "=" => self.make_token_if(
-                self.match_next("="),
-                TokenType::EqualEqual,
-                TokenType::Equal,
-            ),
-            "<" => self.make_token_if(self.match_next("="), TokenType::LessEqual, TokenType::Less),
-            ">" => self.make_token_if(
-                self.match_next("="),
-                TokenType::GreaterEqual,
-                TokenType::Greater,
-            ),
+            "!" => {
+                if self.match_next("=") {
+                    self.make_token(TokenType::BangEqual)
+                } else {
+                    self.make_token(TokenType::Bang)
+                }
+            }
+            "=" => {
+                if self.match_next("=") {
+                    self.make_token(TokenType::EqualEqual)
+                } else {
+                    self.make_token(TokenType::Equal)
+                }
+            }
+            "<" => {
+                if self.match_next("=") {
+                    self.make_token(TokenType::LessEqual)
+                } else {
+                    self.make_token(TokenType::Less)
+                }
+            }
+            ">" => {
+                if self.match_next("=") {
+                    self.make_token(TokenType::GreaterEqual)
+                } else {
+                    self.make_token(TokenType::Greater)
+                }
+            }
             "\"" => self.string(),
             _ => self.error_token("Unexpected character."),
-        };
+        }
     }
 
-    fn is_alpha(&self, c: &str) -> bool {
+    fn is_alpha(c: &str) -> bool {
         return match c.len() {
             0 => false,
             _ => {
@@ -130,7 +161,7 @@ impl Scanner<'_> {
         };
     }
 
-    fn is_digit(&self, c: &str) -> bool {
+    fn is_digit(c: &str) -> bool {
         return match c.len() {
             0 => false,
             _ => {
@@ -180,30 +211,24 @@ impl Scanner<'_> {
     }
 
     fn make_token(&self, token_type: TokenType) -> Token {
-        Token {
-            kind: token_type,
-            lexeme: &self.source[self.start..self.current],
-            line: self.line,
+        match token_type {
+            TokenType::EOF => Token {
+                kind: token_type,
+                lexeme: String::new(),
+                line: self.line,
+            },
+            _ => Token {
+                kind: token_type,
+                lexeme: (&self.source[self.start..self.current]).to_owned(),
+                line: self.line,
+            },
         }
-    }
-
-    fn make_token_if(
-        &self,
-        predicate: bool,
-        true_token_type: TokenType,
-        false_token_type: TokenType,
-    ) -> Token {
-        if predicate {
-            return self.make_token(true_token_type);
-        }
-
-        self.make_token(false_token_type)
     }
 
     fn error_token(&self, message: &'static str) -> Token {
         Token {
             kind: TokenType::Error,
-            lexeme: message,
+            lexeme: String::from(message),
             line: self.line,
         }
     }
@@ -295,7 +320,7 @@ impl Scanner<'_> {
     }
 
     fn identifier(&mut self) -> Token {
-        while self.is_alpha(self.peek()) || self.is_digit(self.peek()) {
+        while Self::is_alpha(self.peek()) || Self::is_digit(self.peek()) {
             self.advance();
         }
 
@@ -303,15 +328,15 @@ impl Scanner<'_> {
     }
 
     fn number(&mut self) -> Token {
-        while self.is_digit(self.peek()) {
+        while Self::is_digit(self.peek()) {
             self.advance();
         }
 
-        if self.peek() == "." && self.is_digit(self.peek_next()) {
+        if self.peek() == "." && Self::is_digit(self.peek_next()) {
             // Consume the .
             self.advance();
 
-            while self.is_digit(self.peek()) {
+            while Self::is_digit(self.peek()) {
                 self.advance();
             }
         }

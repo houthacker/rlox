@@ -20,8 +20,8 @@ fn main() {
 
     let argc = args.len();
     if argc == 1 {
-        repl(&mut vm);
-        println!("Done")
+        repl();
+        println!("Done");
     } else if argc == 2 {
         run_file(&mut vm, &args[1]);
     } else {
@@ -30,14 +30,14 @@ fn main() {
     }
 }
 
-fn repl(vm: &mut VM) {
-    loop {
-        print!("rlox> ");
+fn repl() {
+    let mut vm = VM::new();
 
+    loop {
         let mut line = String::new();
         match io::stdin().read_line(&mut line) {
-            Ok(len) => {
-                interpret(vm, &line);
+            Ok(_) => {
+                vm.interpret(line);
             }
             Err(error) => {
                 eprintln!("Could not read from stdin: {}", error);
@@ -48,24 +48,13 @@ fn repl(vm: &mut VM) {
 
 fn run_file(vm: &mut VM, path: &String) {
     match fs::read_to_string(path) {
-        Ok(contents) => {
-            let result = interpret(vm, &contents);
-
-            match result {
-                InterpretResult::CompileError => std::process::exit(65),
-                InterpretResult::RuntimeError => std::process::exit(70),
-                InterpretResult::Ok => {}
-            }
-        }
+        Ok(contents) => match vm.interpret(contents) {
+            InterpretResult::CompileError => std::process::exit(65),
+            InterpretResult::RuntimeError => std::process::exit(70),
+            InterpretResult::Ok => {}
+        },
         Err(error) => {
             eprintln!("Could not read file {}: {}", path, error);
         }
     }
-}
-
-fn interpret(vm: &mut VM, source: &String) -> InterpretResult {
-    // TODO move to VM
-    let mut compiler = Compiler::new();
-    compiler.compile(source);
-    InterpretResult::Ok
 }
