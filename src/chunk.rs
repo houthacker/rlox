@@ -57,8 +57,8 @@ pub struct Chunk {
 }
 
 impl Chunk {
-    pub fn new() -> Chunk {
-        Chunk {
+    pub fn new() -> Self {
+        Self {
             code: Vec::new(),
             lines: Vec::new(),
             constants: Vec::new(),
@@ -180,9 +180,9 @@ mod tests {
     fn chunk_create() {
         let chunk = Chunk::new();
 
-        assert_eq!(chunk.code.is_empty(), true);
-        assert_eq!(chunk.lines.is_empty(), true);
-        assert_eq!(chunk.constants.is_empty(), true);
+        assert!(chunk.code.is_empty());
+        assert!(chunk.lines.is_empty());
+        assert!(chunk.constants.is_empty());
     }
 
     #[test]
@@ -202,7 +202,7 @@ mod tests {
         assert_eq!(chunk.code.len(), 1);
         assert_eq!(chunk.code.get(0), Some(&42));
 
-        assert_eq!(chunk.constants.is_empty(), true);
+        assert!(chunk.constants.is_empty());
     }
 
     #[test]

@@ -40,16 +40,15 @@ impl VM {
     }
 
     pub fn interpret(&mut self, source: String) -> InterpretResult {
-        let chunk = Chunk::new();
+        let mut chunk = Chunk::new();
 
-        let (success, mut compiled) = self.compiler.compile(source, chunk);
-        if !success {
+        if !self.compiler.compile(source, &mut chunk) {
             return InterpretResult::CompileError;
         }
 
-        self.ip = compiled.code.as_mut_ptr();
+        self.ip = chunk.code.as_mut_ptr();
 
-        unsafe { self.run(&compiled) }
+        unsafe { self.run(&chunk) }
     }
 
     unsafe fn run(&mut self, chunk: &Chunk) -> InterpretResult {
@@ -59,7 +58,7 @@ impl VM {
                 print!("          ");
                 for sp in 0..self.stack_top {
                     print!("[ ");
-                    print_value(&self.stack[sp].assume_init_ref());
+                    print_value(self.stack[sp].assume_init_ref());
                     print!(" ]");
                 }
                 println!();
@@ -88,12 +87,12 @@ impl VM {
                     }
                 }
                 OpCode::OpConstant => {
-                    let value = self.read_constant(chunk).clone();
-                    self.stack_push(value);
+                    let value = self.read_constant(chunk);
+                    self.stack_push(*value);
                 }
                 OpCode::OpConstantLong => {
-                    let value = self.read_long_constant(chunk).clone();
-                    self.stack_push(value);
+                    let value = self.read_long_constant(chunk);
+                    self.stack_push(*value);
                 }
                 OpCode::OpDivide => {
                     if self.validate_two_operands(
@@ -158,7 +157,7 @@ impl VM {
     }
 
     fn peek(&mut self, distance: usize) -> Value {
-        unsafe { self.stack[self.stack_top - 1 - distance].assume_init() }
+        unsafe { self.stack[self.stack_top - distance].assume_init() }
     }
 
     fn validate_two_operands(

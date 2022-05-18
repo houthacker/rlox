@@ -90,6 +90,8 @@ impl Scanner {
     }
 
     pub fn scan_token(&mut self) -> Token {
+        self.skip_whitespace();
+
         self.start = self.current;
 
         if self.is_at_end() {
@@ -154,9 +156,7 @@ impl Scanner {
             0 => false,
             _ => {
                 let first = c.as_bytes()[0];
-                (first >= 'a' as u8 && first <= 'z' as u8)
-                    || (first >= 'A' as u8 && first <= 'Z' as u8)
-                    || first == '_' as u8
+                (b'a'..=b'z').contains(&first) || (b'A'..=b'Z').contains(&first) || first == b'_'
             }
         };
     }
@@ -181,11 +181,11 @@ impl Scanner {
         if self.current + 1 > self.source.len() {
             return ""; // TODO return Option<&str>?
         }
-        &self.source[self.current..self.current + 1]
+        &self.source[self.current - 1..self.current]
     }
 
     fn peek(&self) -> &str {
-        &self.source[self.current..self.current + 1]
+        &self.source[self.current..=self.current]
     }
 
     fn peek_next(&self) -> &str {
@@ -193,7 +193,7 @@ impl Scanner {
             return ""; // TODO return Option<&str>?
         }
 
-        &self.source[self.current + 1..self.current + 2]
+        &self.source[self.current + 1..=self.current + 1]
     }
 
     fn match_next(&mut self, expected: &str) -> bool {
@@ -270,53 +270,51 @@ impl Scanner {
             return token_type;
         }
 
-        return TokenType::Identifier;
+        TokenType::Identifier
     }
 
     fn identifier_type(&self) -> TokenType {
         // We already read the whole identifier, now we check its type.
-        let lexeme = &self.source[self.start..self.current];
+        let lexeme = &self.source[self.start..self.current - 1];
         let bytes = lexeme.as_bytes();
 
-        return match bytes[0] {
-            x if x == 'a' as u8 => self.check_keyword(lexeme, 1, "nd", TokenType::And),
-            x if x == 'c' as u8 => self.check_keyword(lexeme, 1, "lass", TokenType::Class),
-            x if x == 'e' as u8 => self.check_keyword(lexeme, 1, "lse", TokenType::Else),
-            x if x == 'f' as u8 => {
+        match bytes[0] {
+            x if x == b'a' => self.check_keyword(lexeme, 1, "nd", TokenType::And),
+            x if x == b'c' => self.check_keyword(lexeme, 1, "lass", TokenType::Class),
+            x if x == b'e' => self.check_keyword(lexeme, 1, "lse", TokenType::Else),
+            x if x == b'f' => {
                 if self.current - self.start > 1 {
-                    return match bytes[1] {
-                        x if x == 'a' as u8 => {
-                            self.check_keyword(lexeme, 2, "lse", TokenType::False)
-                        }
-                        x if x == 'o' as u8 => self.check_keyword(lexeme, 2, "r", TokenType::For),
-                        x if x == 'u' as u8 => self.check_keyword(lexeme, 2, "un", TokenType::Fun),
+                    match bytes[1] {
+                        x if x == b'a' => self.check_keyword(lexeme, 2, "lse", TokenType::False),
+                        x if x == b'o' => self.check_keyword(lexeme, 2, "r", TokenType::For),
+                        x if x == b'u' => self.check_keyword(lexeme, 2, "un", TokenType::Fun),
                         _ => TokenType::Identifier,
-                    };
+                    }
                 } else {
                     TokenType::Identifier
                 }
             }
-            x if x == 'i' as u8 => self.check_keyword(lexeme, 1, "f", TokenType::If),
-            x if x == 'n' as u8 => self.check_keyword(lexeme, 1, "il", TokenType::Nil),
-            x if x == 'o' as u8 => self.check_keyword(lexeme, 1, "r", TokenType::Or),
-            x if x == 'p' as u8 => self.check_keyword(lexeme, 1, "rint", TokenType::Print),
-            x if x == 'r' as u8 => self.check_keyword(lexeme, 1, "eturn", TokenType::Return),
-            x if x == 's' as u8 => self.check_keyword(lexeme, 1, "uper", TokenType::Super),
-            x if x == 't' as u8 => {
+            x if x == b'i' => self.check_keyword(lexeme, 1, "f", TokenType::If),
+            x if x == b'n' => self.check_keyword(lexeme, 1, "il", TokenType::Nil),
+            x if x == b'o' => self.check_keyword(lexeme, 1, "r", TokenType::Or),
+            x if x == b'p' => self.check_keyword(lexeme, 1, "rint", TokenType::Print),
+            x if x == b'r' => self.check_keyword(lexeme, 1, "eturn", TokenType::Return),
+            x if x == b's' => self.check_keyword(lexeme, 1, "uper", TokenType::Super),
+            x if x == b't' => {
                 if self.current - self.start > 1 {
-                    return match bytes[1] {
-                        x if x == 'h' as u8 => self.check_keyword(lexeme, 2, "is", TokenType::This),
-                        x if x == 'r' as u8 => self.check_keyword(lexeme, 2, "ue", TokenType::True),
+                    match bytes[1] {
+                        x if x == b'h' => self.check_keyword(lexeme, 2, "is", TokenType::This),
+                        x if x == b'r' => self.check_keyword(lexeme, 2, "ue", TokenType::True),
                         _ => TokenType::Identifier,
-                    };
+                    }
                 } else {
                     TokenType::Identifier
                 }
             }
-            x if x == 'v' as u8 => self.check_keyword(lexeme, 1, "ar", TokenType::Var),
-            x if x == 'w' as u8 => self.check_keyword(lexeme, 1, "hile", TokenType::While),
+            x if x == b'v' => self.check_keyword(lexeme, 1, "ar", TokenType::Var),
+            x if x == b'w' => self.check_keyword(lexeme, 1, "hile", TokenType::While),
             _ => TokenType::Identifier,
-        };
+        }
     }
 
     fn identifier(&mut self) -> Token {
@@ -341,7 +339,7 @@ impl Scanner {
             }
         }
 
-        return self.make_token(TokenType::Number);
+        self.make_token(TokenType::Number)
     }
 
     fn string(&mut self) -> Token {

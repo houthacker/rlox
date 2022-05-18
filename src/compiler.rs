@@ -3,8 +3,6 @@ use crate::debug::disassemble_chunk;
 use crate::scanner::{Scanner, Token, TokenType};
 use crate::value::{Value, ValueType, U};
 use crate::{number_val, Chunk, OpCode};
-use std::alloc::{self, Layout};
-use std::ptr;
 use std::ptr::NonNull;
 
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
@@ -101,49 +99,26 @@ impl Compiler {
         token_type: TokenType,
     ) -> ParseRule {
         match token_type {
-            TokenType::LeftParen    => ParseRule(Some(Compiler::grouping),   Some(Self::nop),        Precedence::None),
-            TokenType::Minus        => ParseRule(Some(Self::unary),      Some(Self::binary),     Precedence::Term),
-            TokenType::Plus         => ParseRule(None,                   Some(Self::binary),     Precedence::Term),
-            TokenType::Slash        => ParseRule(None,                   Some(Self::binary),     Precedence::Factor),
-            TokenType::Star         => ParseRule(None,                   Some(Self::binary),     Precedence::Factor),
-            TokenType::Number       => ParseRule(None,                   None,                   Precedence::None),
-            _                       => ParseRule(None,                   None,                   Precedence::None),
+            TokenType::LeftParen    => ParseRule(Some(Compiler::grouping),  Some(Self::nop),        Precedence::None),
+            TokenType::Minus        => ParseRule(Some(Self::unary),         Some(Self::binary),     Precedence::Term),
+            TokenType::Plus         => ParseRule(None,                      Some(Self::binary),     Precedence::Term),
+            TokenType::Slash        => ParseRule(None,                      Some(Self::binary),     Precedence::Factor),
+            TokenType::Star         => ParseRule(None,                      Some(Self::binary),     Precedence::Factor),
+            TokenType::Number       => ParseRule(None,                      None,                   Precedence::None),
+            _                       => ParseRule(None,                      None,                   Precedence::None),
         }
     }
 
-    pub fn compile(&mut self, source: String, chunk: Chunk) -> (bool, Chunk) {
+    pub fn compile(&mut self, source: String, chunk: &mut Chunk) -> bool {
         self.scanner = Some(Scanner::new(source));
-        unsafe {
-            self.set_chunk(chunk);
-        }
+        self.compiling_chunk = NonNull::from(chunk);
 
         self.advance();
         self.expression();
         self.consume(TokenType::EOF, "Expect end of expression.");
 
         self.end_compiler();
-        (!self.parser.had_error, unsafe {
-            ptr::read(self.compiling_chunk.as_ptr())
-        })
-    }
-
-    unsafe fn set_chunk(&mut self, chunk: Chunk) {
-        let layout = Layout::for_value(&chunk);
-
-        let new_ptr = if NonNull::<Chunk>::eq(&self.compiling_chunk, &NonNull::dangling()) {
-            alloc::alloc(layout)
-        } else {
-            let old_ptr = self.compiling_chunk.as_ptr() as *mut u8;
-            alloc::realloc(old_ptr, layout, layout.size())
-        };
-
-        self.compiling_chunk = match NonNull::new(new_ptr as *mut Chunk) {
-            Some(ptr) => ptr,
-            None => alloc::handle_alloc_error(layout),
-        };
-
-        // and write to the newly alloc'ed pointer
-        ptr::write(self.compiling_chunk.as_ptr(), chunk);
+        self.parser.had_error
     }
 
     fn current_chunk(&mut self) -> &mut Chunk {
@@ -245,7 +220,7 @@ impl Compiler {
             TokenType::Minus => self.emit_byte(OpCode::OpSubtract as u8),
             TokenType::Star => self.emit_byte(OpCode::OpMultiply as u8),
             TokenType::Slash => self.emit_byte(OpCode::OpDivide as u8),
-            _ => return,
+            _ => (),
         }
     }
 
@@ -269,9 +244,8 @@ impl Compiler {
 
         self.parse_precedence(Precedence::Unary);
 
-        match token_type {
-            TokenType::Minus => self.emit_byte(OpCode::OpNegate as u8),
-            _ => return,
+        if token_type == TokenType::Minus {
+            self.emit_byte(OpCode::OpNegate as u8)
         }
     }
 
