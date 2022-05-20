@@ -1,4 +1,4 @@
-use crate::value::Value;
+use crate::value::{Value, ValueType, U};
 use std::fmt::{Display, Formatter};
 
 pub type InstructionIndex = usize;
@@ -7,14 +7,21 @@ pub type LineNumber = u32;
 /// bytecode instructions for the rlox VM
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
 pub enum OpCode {
-    OpAdd,
-    OpConstant,
-    OpConstantLong,
-    OpDivide,
-    OpMultiply,
-    OpNegate,
-    OpReturn,
-    OpSubtract,
+    Add,
+    Constant,
+    ConstantLong,
+    Divide,
+    Equal,
+    False,
+    Greater,
+    Less,
+    Multiply,
+    Negate,
+    Nil,
+    Not,
+    Return,
+    Subtract,
+    True,
 }
 
 impl Display for OpCode {
@@ -28,43 +35,44 @@ impl TryFrom<u8> for OpCode {
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            0 => Ok(OpCode::OpAdd),
-            1 => Ok(OpCode::OpConstant),
-            2 => Ok(OpCode::OpConstantLong),
-            3 => Ok(OpCode::OpDivide),
-            4 => Ok(OpCode::OpMultiply),
-            5 => Ok(OpCode::OpNegate),
-            6 => Ok(OpCode::OpReturn),
-            7 => Ok(OpCode::OpSubtract),
+            0 => Ok(OpCode::Add),
+            1 => Ok(OpCode::Constant),
+            2 => Ok(OpCode::ConstantLong),
+            3 => Ok(OpCode::Divide),
+            4 => Ok(OpCode::Equal),
+            5 => Ok(OpCode::False),
+            6 => Ok(OpCode::Greater),
+            7 => Ok(OpCode::Less),
+            8 => Ok(OpCode::Multiply),
+            9 => Ok(OpCode::Negate),
+            10 => Ok(OpCode::Nil),
+            11 => Ok(OpCode::Not),
+            12 => Ok(OpCode::Return),
+            13 => Ok(OpCode::Subtract),
+            14 => Ok(OpCode::True),
             _ => Err("Unknown OpCode"),
         }
     }
 }
 
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct Line {
     pub no: LineNumber,
     pub references: usize,
 }
 
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
+#[derive(Clone)]
 pub struct Chunk {
     pub code: Vec<u8>,
     pub lines: Vec<Line>,
     pub constants: Vec<Value>,
 }
 
-#[cfg(feature = "rlox_debug")]
-impl Drop for Chunk {
-    fn drop(&mut self) {
-        println!("Dropping Chunk");
-    }
-}
-
 impl Chunk {
-    pub fn new() -> Chunk {
-        Chunk {
+    pub fn new() -> Self {
+        Self {
             code: Vec::new(),
             lines: Vec::new(),
             constants: Vec::new(),
@@ -92,11 +100,11 @@ impl Chunk {
     pub fn write_constant(&mut self, value: Value, line: LineNumber) {
         match self.add_constant(value) {
             x if x <= u8::MAX as InstructionIndex => {
-                self.write(OpCode::OpConstant as u8, line);
+                self.write(OpCode::Constant as u8, line);
                 self.write(x as u8, line);
             }
             x => {
-                self.write(OpCode::OpConstantLong as u8, line);
+                self.write(OpCode::ConstantLong as u8, line);
                 let bytes: [u8; 4] = (x as u32).to_le_bytes();
 
                 // rlox supports constant indexes up to 24 bits, so assert the last byte is zero
@@ -179,16 +187,16 @@ impl Chunk {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
+    use crate::number_val;
 
     #[test]
     fn chunk_create() {
         let chunk = Chunk::new();
 
-        assert_eq!(chunk.code.is_empty(), true);
-        assert_eq!(chunk.lines.is_empty(), true);
-        assert_eq!(chunk.constants.is_empty(), true);
+        assert!(chunk.code.is_empty());
+        assert!(chunk.lines.is_empty());
+        assert!(chunk.constants.is_empty());
     }
 
     #[test]
@@ -208,14 +216,14 @@ mod tests {
         assert_eq!(chunk.code.len(), 1);
         assert_eq!(chunk.code.get(0), Some(&42));
 
-        assert_eq!(chunk.constants.is_empty(), true);
+        assert!(chunk.constants.is_empty());
     }
 
     #[test]
     fn chunk_write_constant() {
         let mut chunk = Chunk::new();
 
-        chunk.write_constant(1.337, 2);
+        chunk.write_constant(number_val!(1.337), 2);
         assert_eq!(chunk.lines.len(), 1);
         assert_eq!(
             chunk.lines.get(0),
@@ -226,11 +234,11 @@ mod tests {
         );
 
         assert_eq!(chunk.code.len(), 2);
-        assert_eq!(chunk.code.get(0), Some(&(OpCode::OpConstant as u8)));
+        assert_eq!(chunk.code.get(0), Some(&(OpCode::Constant as u8)));
         assert_eq!(chunk.code.get(1), Some(&0));
 
         assert_eq!(chunk.constants.len(), 1);
-        assert_eq!(chunk.constants.get(0), Some(&1.337));
+        assert_eq!(chunk.constants.get(0), Some(&number_val!(1.337)));
     }
 
     #[test]
@@ -239,7 +247,7 @@ mod tests {
         let max = 257;
 
         for i in 1..=max {
-            chunk.write_constant(1.337, i);
+            chunk.write_constant(number_val!(1.337), i);
         }
 
         assert_eq!(chunk.code.len(), 516);
