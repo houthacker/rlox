@@ -99,12 +99,22 @@ impl Compiler {
         token_type: TokenType,
     ) -> ParseRule {
         match token_type {
-            TokenType::LeftParen    => ParseRule(Some(Compiler::grouping),  Some(Self::nop),        Precedence::None),
+            TokenType::Bang         => ParseRule(Some(Self::unary),         None,                   Precedence::None),
+            TokenType::BangEqual    => ParseRule(None,                      Some(Self::binary),     Precedence::Equality),
+            TokenType::EqualEqual   => ParseRule(None,                      Some(Self::binary),     Precedence::Equality),
+            TokenType::False        => ParseRule(Some(Self::literal),       None,                   Precedence::None),
+            TokenType::Greater      => ParseRule(None,                      Some(Self::binary),     Precedence::Comparison),
+            TokenType::GreaterEqual => ParseRule(None,                      Some(Self::binary),     Precedence::Comparison),
+            TokenType::LeftParen    => ParseRule(Some(Self::grouping),      None,                   Precedence::None),
+            TokenType::Less         => ParseRule(None,                      Some(Self::binary),     Precedence::Comparison),
+            TokenType::LessEqual    => ParseRule(None,                      Some(Self::binary),     Precedence::Comparison),
             TokenType::Minus        => ParseRule(Some(Self::unary),         Some(Self::binary),     Precedence::Term),
+            TokenType::Nil          => ParseRule(Some(Self::literal),       None,                   Precedence::None),
+            TokenType::Number       => ParseRule(Some(Self::number),        None,                   Precedence::None),
             TokenType::Plus         => ParseRule(None,                      Some(Self::binary),     Precedence::Term),
             TokenType::Slash        => ParseRule(None,                      Some(Self::binary),     Precedence::Factor),
             TokenType::Star         => ParseRule(None,                      Some(Self::binary),     Precedence::Factor),
-            TokenType::Number       => ParseRule(None,                      None,                   Precedence::None),
+            TokenType::True         => ParseRule(Some(Self::literal),       None,                   Precedence::None),
             _                       => ParseRule(None,                      None,                   Precedence::None),
         }
     }
@@ -118,7 +128,7 @@ impl Compiler {
         self.consume(TokenType::EOF, "Expect end of expression.");
 
         self.end_compiler();
-        self.parser.had_error
+        !self.parser.had_error
     }
 
     fn current_chunk(&mut self) -> &mut Chunk {
@@ -195,7 +205,7 @@ impl Compiler {
     }
 
     fn emit_return(&mut self) {
-        self.emit_byte(OpCode::OpReturn as u8);
+        self.emit_byte(OpCode::Return as u8);
     }
 
     fn emit_constant(&mut self, value: Value, line: LineNumber) {
@@ -216,15 +226,28 @@ impl Compiler {
         self.parse_precedence(rule.2.next());
 
         match operator_type {
-            TokenType::Plus => self.emit_byte(OpCode::OpAdd as u8),
-            TokenType::Minus => self.emit_byte(OpCode::OpSubtract as u8),
-            TokenType::Star => self.emit_byte(OpCode::OpMultiply as u8),
-            TokenType::Slash => self.emit_byte(OpCode::OpDivide as u8),
+            TokenType::BangEqual => self.emit_bytes(OpCode::Equal as u8, OpCode::Not as u8), // todo optimize
+            TokenType::EqualEqual => self.emit_byte(OpCode::Equal as u8),
+            TokenType::Greater => self.emit_byte(OpCode::Greater as u8),
+            TokenType::GreaterEqual => self.emit_bytes(OpCode::Less as u8, OpCode::Not as u8),
+            TokenType::Less => self.emit_byte(OpCode::Less as u8),
+            TokenType::LessEqual => self.emit_bytes(OpCode::Greater as u8, OpCode::Not as u8),
+            TokenType::Minus => self.emit_byte(OpCode::Subtract as u8),
+            TokenType::Plus => self.emit_byte(OpCode::Add as u8),
+            TokenType::Star => self.emit_byte(OpCode::Multiply as u8),
+            TokenType::Slash => self.emit_byte(OpCode::Divide as u8),
             _ => (),
         }
     }
 
-    fn nop(&mut self) {}
+    fn literal(&mut self) {
+        match self.borrow_previous().kind {
+            TokenType::False => self.emit_byte(OpCode::False as u8),
+            TokenType::Nil => self.emit_byte(OpCode::Nil as u8),
+            TokenType::True => self.emit_byte(OpCode::True as u8),
+            _ => (),
+        }
+    }
 
     fn grouping(&mut self) {
         self.expression();
@@ -244,8 +267,10 @@ impl Compiler {
 
         self.parse_precedence(Precedence::Unary);
 
-        if token_type == TokenType::Minus {
-            self.emit_byte(OpCode::OpNegate as u8)
+        match token_type {
+            TokenType::Bang => self.emit_byte(OpCode::Not as u8),
+            TokenType::Minus => self.emit_byte(OpCode::Negate as u8),
+            _ => (),
         }
     }
 
@@ -279,5 +304,51 @@ impl Compiler {
 
     fn borrow_previous(&self) -> &Token {
         self.parser.previous.as_ref().unwrap()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compile_numeric_binary_unary() {
+        let mut compiler = Compiler::new();
+        let source = String::from("!(5 - 4 > 3 * 2 == !nil)");
+        let mut chunk = Chunk::new();
+
+        assert!(compiler.compile(source, &mut chunk));
+
+        assert_eq!(
+            chunk.constants,
+            vec![
+                number_val!(5f64),
+                number_val!(4f64),
+                number_val!(3f64),
+                number_val!(2f64)
+            ]
+        );
+
+        assert_eq!(
+            chunk.code,
+            vec![
+                OpCode::Constant as u8,
+                0u8, // constant index
+                OpCode::Constant as u8,
+                1u8,
+                OpCode::Subtract as u8,
+                OpCode::Constant as u8,
+                2u8,
+                OpCode::Constant as u8,
+                3u8,
+                OpCode::Multiply as u8,
+                OpCode::Greater as u8,
+                OpCode::Nil as u8,
+                OpCode::Not as u8,
+                OpCode::Equal as u8,
+                OpCode::Not as u8,
+                OpCode::Return as u8,
+            ]
+        );
     }
 }

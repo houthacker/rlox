@@ -1,6 +1,6 @@
-use crate::debug::disassemble_instruction;
+use crate::debug::{disassemble_chunk, disassemble_instruction};
 use crate::value::{print_value, Value, ValueType, U};
-use crate::{as_number, number_val, Chunk, Compiler, OpCode};
+use crate::{as_bool, as_number, bool_val, nil_val, number_val, Chunk, Compiler, OpCode};
 use std::mem::MaybeUninit;
 use std::ptr;
 
@@ -46,6 +46,8 @@ impl VM {
             return InterpretResult::CompileError;
         }
 
+        disassemble_chunk(&chunk, "Chunk");
+
         self.ip = chunk.code.as_mut_ptr();
 
         unsafe { self.run(&chunk) }
@@ -75,7 +77,7 @@ impl VM {
             }
 
             match opcode.unwrap() {
-                OpCode::OpAdd => {
+                OpCode::Add => {
                     if self.validate_two_operands(
                         chunk,
                         Value::is_number,
@@ -86,15 +88,15 @@ impl VM {
                         return InterpretResult::RuntimeError;
                     }
                 }
-                OpCode::OpConstant => {
+                OpCode::Constant => {
                     let value = self.read_constant(chunk);
                     self.stack_push(*value);
                 }
-                OpCode::OpConstantLong => {
+                OpCode::ConstantLong => {
                     let value = self.read_long_constant(chunk);
                     self.stack_push(*value);
                 }
-                OpCode::OpDivide => {
+                OpCode::Divide => {
                     if self.validate_two_operands(
                         chunk,
                         Value::is_number,
@@ -105,7 +107,36 @@ impl VM {
                         return InterpretResult::RuntimeError;
                     }
                 }
-                OpCode::OpMultiply => {
+                OpCode::Equal => {
+                    let y = self.stack_pop();
+                    let x = self.stack_pop();
+                    let result = bool_val!(Self::values_equal(&x, &y));
+                    self.stack_push(result);
+                }
+                OpCode::False => self.stack_push(bool_val!(false)),
+                OpCode::Greater => {
+                    if self.validate_two_operands(
+                        chunk,
+                        Value::is_number,
+                        "Operands must be numbers.",
+                    ) {
+                        self.op_greater();
+                    } else {
+                        return InterpretResult::RuntimeError;
+                    }
+                }
+                OpCode::Less => {
+                    if self.validate_two_operands(
+                        chunk,
+                        Value::is_number,
+                        "Operands must be numbers.",
+                    ) {
+                        self.op_less();
+                    } else {
+                        return InterpretResult::RuntimeError;
+                    }
+                }
+                OpCode::Multiply => {
                     if self.validate_two_operands(
                         chunk,
                         Value::is_number,
@@ -116,21 +147,27 @@ impl VM {
                         return InterpretResult::RuntimeError;
                     }
                 }
-                OpCode::OpNegate => {
+                OpCode::Negate => {
                     if !Value::is_number(&self.peek(0)) {
                         self.runtime_error(chunk, "Operand must be a number.");
                         return InterpretResult::RuntimeError;
                     }
                     self.stack_top_negate_number();
                 }
-                OpCode::OpReturn => {
+                OpCode::Nil => self.stack_push(nil_val!()),
+                OpCode::Not => {
+                    let value = self.stack_pop();
+                    self.stack_push(bool_val!(Self::is_falsey(&value)))
+                }
+                OpCode::Return => {
                     print_value(&self.stack_pop());
                     println!();
                     return InterpretResult::Ok;
                 }
-                OpCode::OpSubtract => {
+                OpCode::Subtract => {
                     self.op_subtract();
                 }
+                OpCode::True => self.stack_push(bool_val!(true)),
             };
         }
     }
@@ -157,7 +194,23 @@ impl VM {
     }
 
     fn peek(&mut self, distance: usize) -> Value {
-        unsafe { self.stack[self.stack_top - distance].assume_init() }
+        unsafe { self.stack[self.stack_top - 1 - distance].assume_init() }
+    }
+
+    fn is_falsey(value: &Value) -> bool {
+        Value::is_nil(value) || (Value::is_bool(value) && !as_bool!(*value))
+    }
+
+    fn values_equal(x: &Value, y: &Value) -> bool {
+        if x.kind != y.kind {
+            false
+        } else {
+            match x.kind {
+                ValueType::Nil => true,
+                ValueType::Bool => as_bool!(*x) == as_bool!(*y),
+                ValueType::Number => as_number!(*x) == as_number!(*y),
+            }
+        }
     }
 
     fn validate_two_operands(
@@ -166,7 +219,7 @@ impl VM {
         validator: fn(&Value) -> bool,
         message: &str,
     ) -> bool {
-        if !validator(&self.peek(0)) || validator(&self.peek(0)) {
+        if !validator(&self.peek(0)) || !validator(&self.peek(1)) {
             self.runtime_error(chunk, message);
             return false;
         }
@@ -193,6 +246,18 @@ impl VM {
     fn op_divide(&mut self) {
         let (y, x) = self.pop_two();
         self.stack_push(number_val!(as_number!(x) / as_number!(y)));
+    }
+
+    #[inline(always)]
+    fn op_greater(&mut self) {
+        let (y, x) = self.pop_two();
+        self.stack_push(bool_val!(as_number!(x) > as_number!(y)));
+    }
+
+    #[inline(always)]
+    fn op_less(&mut self) {
+        let (y, x) = self.pop_two();
+        self.stack_push(bool_val!(as_number!(x) < as_number!(y)));
     }
 
     #[inline(always)]
@@ -257,6 +322,14 @@ mod tests {
     fn interpret_test_chunk() {
         let mut vm = VM::new();
         let source = String::from("return -((1.2 + 3.4) / 5.6)");
+
+        vm.interpret(source);
+    }
+
+    #[test]
+    fn interpret_numeric_expr() {
+        let mut vm = VM::new();
+        let source = String::from("!(5 - 4 > 3 * 2 == !nil)");
 
         vm.interpret(source);
     }

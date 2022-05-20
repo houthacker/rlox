@@ -45,7 +45,7 @@ impl std::fmt::Debug for Value {
 
 impl Clone for Value {
     fn clone(&self) -> Self {
-        return match self.kind {
+        match self.kind {
             ValueType::Nil => Value {
                 kind: ValueType::Nil,
                 to: U { number: 0.0 },
@@ -62,7 +62,7 @@ impl Clone for Value {
                     number: unsafe { self.to.number },
                 },
             },
-        };
+        }
     }
 }
 
@@ -72,11 +72,11 @@ impl PartialEq for Value {
             return false;
         }
 
-        return match self.kind {
+        match self.kind {
             ValueType::Nil => true,
             ValueType::Bool => unsafe { self.to.boolean == other.to.boolean },
             ValueType::Number => unsafe { self.to.number == other.to.number },
-        };
+        }
     }
 }
 

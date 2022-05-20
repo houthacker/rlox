@@ -107,106 +107,123 @@ impl Scanner {
         }
 
         match c {
-            "(" => self.make_token(TokenType::LeftParen),
-            ")" => self.make_token(TokenType::RightParen),
-            "{" => self.make_token(TokenType::LeftBrace),
-            "}" => self.make_token(TokenType::RightBrace),
-            ";" => self.make_token(TokenType::Semicolon),
-            "," => self.make_token(TokenType::Comma),
-            "." => self.make_token(TokenType::Dot),
-            "-" => self.make_token(TokenType::Minus),
-            "+" => self.make_token(TokenType::Plus),
-            "/" => self.make_token(TokenType::Slash),
-            "*" => self.make_token(TokenType::Star),
-            "!" => {
+            Some("(") => self.make_token(TokenType::LeftParen),
+            Some(")") => self.make_token(TokenType::RightParen),
+            Some("{") => self.make_token(TokenType::LeftBrace),
+            Some("}") => self.make_token(TokenType::RightBrace),
+            Some(";") => self.make_token(TokenType::Semicolon),
+            Some(",") => self.make_token(TokenType::Comma),
+            Some(".") => self.make_token(TokenType::Dot),
+            Some("-") => self.make_token(TokenType::Minus),
+            Some("+") => self.make_token(TokenType::Plus),
+            Some("/") => self.make_token(TokenType::Slash),
+            Some("*") => self.make_token(TokenType::Star),
+            Some("!") => {
                 if self.match_next("=") {
                     self.make_token(TokenType::BangEqual)
                 } else {
                     self.make_token(TokenType::Bang)
                 }
             }
-            "=" => {
+            Some("=") => {
                 if self.match_next("=") {
                     self.make_token(TokenType::EqualEqual)
                 } else {
                     self.make_token(TokenType::Equal)
                 }
             }
-            "<" => {
+            Some("<") => {
                 if self.match_next("=") {
                     self.make_token(TokenType::LessEqual)
                 } else {
                     self.make_token(TokenType::Less)
                 }
             }
-            ">" => {
+            Some(">") => {
                 if self.match_next("=") {
                     self.make_token(TokenType::GreaterEqual)
                 } else {
                     self.make_token(TokenType::Greater)
                 }
             }
-            "\"" => self.string(),
+            Some("\"") => self.string(),
             _ => self.error_token("Unexpected character."),
         }
     }
 
-    fn is_alpha(c: &str) -> bool {
-        return match c.len() {
-            0 => false,
-            _ => {
-                let first = c.as_bytes()[0];
-                (b'a'..=b'z').contains(&first) || (b'A'..=b'Z').contains(&first) || first == b'_'
-            }
+    fn is_alpha(c: Option<&str>) -> bool {
+        return match c {
+            None => false,
+            Some(s) => match s.len() {
+                0 => false,
+                _ => {
+                    let first = s.as_bytes()[0];
+                    (b'a'..=b'z').contains(&first)
+                        || (b'A'..=b'Z').contains(&first)
+                        || first == b'_'
+                }
+            },
         };
     }
 
-    fn is_digit(c: &str) -> bool {
-        return match c.len() {
-            0 => false,
-            _ => {
-                let first = c.as_bytes()[0];
-                first >= '0' as u8 && first <= '9' as u8
-            }
+    fn is_digit(c: Option<&str>) -> bool {
+        return match c {
+            None => false,
+            Some(s) => match s.len() {
+                0 => false,
+                _ => {
+                    let first = s.as_bytes()[0];
+                    (b'0'..=b'9').contains(&first)
+                }
+            },
         };
     }
 
     fn is_at_end(&self) -> bool {
-        self.current > self.source.len()
+        self.current >= self.source.len()
     }
 
-    fn advance(&mut self) -> &str {
+    fn advance(&mut self) -> Option<&str> {
         self.current += 1;
 
-        if self.current + 1 > self.source.len() {
-            return ""; // TODO return Option<&str>?
+        if self.current > self.source.len() {
+            return None;
         }
-        &self.source[self.current - 1..self.current]
+
+        Some(&self.source[self.current - 1..self.current])
     }
 
-    fn peek(&self) -> &str {
-        &self.source[self.current..=self.current]
+    fn peek(&self) -> Option<&str> {
+        if self.current >= self.source.len() {
+            return None;
+        }
+
+        Some(&self.source[self.current..=self.current])
     }
 
-    fn peek_next(&self) -> &str {
+    fn peek_next(&self) -> Option<&str> {
         if self.is_at_end() {
-            return ""; // TODO return Option<&str>?
+            return None;
         }
 
-        &self.source[self.current + 1..=self.current + 1]
+        Some(&self.source[self.current + 1..=self.current + 1])
     }
 
     fn match_next(&mut self, expected: &str) -> bool {
         return if self.is_at_end() {
             false
         } else {
-            let current = self.peek();
-            if current != expected {
-                return false;
-            }
-
-            self.current += 1;
-            true
+            return match self.peek() {
+                Some(x) => {
+                    return if x != expected {
+                        false
+                    } else {
+                        self.current += 1;
+                        true
+                    }
+                }
+                None => false,
+            };
         };
     }
 
@@ -236,18 +253,18 @@ impl Scanner {
     fn skip_whitespace(&mut self) {
         loop {
             match self.peek() {
-                " " | "\r" | "\t" => {
+                Some(" ") | Some("\r") | Some("\t") => {
                     self.advance();
                 }
-                "\n" => {
+                Some("\n") => {
                     self.line += 1;
                     self.advance();
                 }
                 // Technically, line comments are not whitespace, but for rlox
                 // these are also discarded, so we handle them here.
-                "/" => {
-                    if self.peek_next() == "/" {
-                        while self.peek() != "\n" && !self.is_at_end() {
+                Some("/") => {
+                    if self.peek_next() == Some("/") {
+                        while self.peek() != Some("\n") && !self.is_at_end() {
                             self.advance();
                         }
                     } else {
@@ -275,7 +292,7 @@ impl Scanner {
 
     fn identifier_type(&self) -> TokenType {
         // We already read the whole identifier, now we check its type.
-        let lexeme = &self.source[self.start..self.current - 1];
+        let lexeme = &self.source[self.start..self.current];
         let bytes = lexeme.as_bytes();
 
         match bytes[0] {
@@ -330,7 +347,7 @@ impl Scanner {
             self.advance();
         }
 
-        if self.peek() == "." && Self::is_digit(self.peek_next()) {
+        if self.peek() == Some(".") && Self::is_digit(self.peek_next()) {
             // Consume the .
             self.advance();
 
@@ -343,8 +360,8 @@ impl Scanner {
     }
 
     fn string(&mut self) -> Token {
-        while self.peek() != "\"" && !self.is_at_end() {
-            if self.peek() == "\n" {
+        while self.peek() != Some("\"") && !self.is_at_end() {
+            if self.peek() == Some("\n") {
                 self.line += 1;
             }
             self.advance();
@@ -358,5 +375,58 @@ impl Scanner {
         self.advance();
 
         self.make_token(TokenType::String)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scan_numeric_binary_unary() {
+        let source = String::from("!(5 - 4 > 3 * 2 == !nil)");
+        let mut scanner = Scanner::new(source);
+
+        let mut token = scanner.scan_token();
+        assert_eq!(token.kind, TokenType::Bang);
+
+        token = scanner.scan_token();
+        assert_eq!(token.kind, TokenType::LeftParen);
+
+        token = scanner.scan_token();
+        assert_eq!(token.kind, TokenType::Number);
+
+        token = scanner.scan_token();
+        assert_eq!(token.kind, TokenType::Minus);
+
+        token = scanner.scan_token();
+        assert_eq!(token.kind, TokenType::Number);
+
+        token = scanner.scan_token();
+        assert_eq!(token.kind, TokenType::Greater);
+
+        token = scanner.scan_token();
+        assert_eq!(token.kind, TokenType::Number);
+
+        token = scanner.scan_token();
+        assert_eq!(token.kind, TokenType::Star);
+
+        token = scanner.scan_token();
+        assert_eq!(token.kind, TokenType::Number);
+
+        token = scanner.scan_token();
+        assert_eq!(token.kind, TokenType::EqualEqual);
+
+        token = scanner.scan_token();
+        assert_eq!(token.kind, TokenType::Bang);
+
+        token = scanner.scan_token();
+        assert_eq!(token.kind, TokenType::Nil);
+
+        token = scanner.scan_token();
+        assert_eq!(token.kind, TokenType::RightParen);
+
+        token = scanner.scan_token();
+        assert_eq!(token.kind, TokenType::EOF);
     }
 }

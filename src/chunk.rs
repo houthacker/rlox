@@ -7,14 +7,21 @@ pub type LineNumber = u32;
 /// bytecode instructions for the rlox VM
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
 pub enum OpCode {
-    OpAdd,
-    OpConstant,
-    OpConstantLong,
-    OpDivide,
-    OpMultiply,
-    OpNegate,
-    OpReturn,
-    OpSubtract,
+    Add,
+    Constant,
+    ConstantLong,
+    Divide,
+    Equal,
+    False,
+    Greater,
+    Less,
+    Multiply,
+    Negate,
+    Nil,
+    Not,
+    Return,
+    Subtract,
+    True,
 }
 
 impl Display for OpCode {
@@ -28,14 +35,21 @@ impl TryFrom<u8> for OpCode {
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            0 => Ok(OpCode::OpAdd),
-            1 => Ok(OpCode::OpConstant),
-            2 => Ok(OpCode::OpConstantLong),
-            3 => Ok(OpCode::OpDivide),
-            4 => Ok(OpCode::OpMultiply),
-            5 => Ok(OpCode::OpNegate),
-            6 => Ok(OpCode::OpReturn),
-            7 => Ok(OpCode::OpSubtract),
+            0 => Ok(OpCode::Add),
+            1 => Ok(OpCode::Constant),
+            2 => Ok(OpCode::ConstantLong),
+            3 => Ok(OpCode::Divide),
+            4 => Ok(OpCode::Equal),
+            5 => Ok(OpCode::False),
+            6 => Ok(OpCode::Greater),
+            7 => Ok(OpCode::Less),
+            8 => Ok(OpCode::Multiply),
+            9 => Ok(OpCode::Negate),
+            10 => Ok(OpCode::Nil),
+            11 => Ok(OpCode::Not),
+            12 => Ok(OpCode::Return),
+            13 => Ok(OpCode::Subtract),
+            14 => Ok(OpCode::True),
             _ => Err("Unknown OpCode"),
         }
     }
@@ -86,11 +100,11 @@ impl Chunk {
     pub fn write_constant(&mut self, value: Value, line: LineNumber) {
         match self.add_constant(value) {
             x if x <= u8::MAX as InstructionIndex => {
-                self.write(OpCode::OpConstant as u8, line);
+                self.write(OpCode::Constant as u8, line);
                 self.write(x as u8, line);
             }
             x => {
-                self.write(OpCode::OpConstantLong as u8, line);
+                self.write(OpCode::ConstantLong as u8, line);
                 let bytes: [u8; 4] = (x as u32).to_le_bytes();
 
                 // rlox supports constant indexes up to 24 bits, so assert the last byte is zero
@@ -220,7 +234,7 @@ mod tests {
         );
 
         assert_eq!(chunk.code.len(), 2);
-        assert_eq!(chunk.code.get(0), Some(&(OpCode::OpConstant as u8)));
+        assert_eq!(chunk.code.get(0), Some(&(OpCode::Constant as u8)));
         assert_eq!(chunk.code.get(1), Some(&0));
 
         assert_eq!(chunk.constants.len(), 1);
