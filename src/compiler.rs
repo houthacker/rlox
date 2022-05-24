@@ -268,7 +268,7 @@ impl Compiler {
         let prev = self.borrow_previous();
         let ln = prev.line;
 
-        let rlox_string = ObjString::boxed_from_slice(&prev.lexeme);
+        let rlox_string = ObjString::boxed_from_slice(&prev.lexeme[1..prev.lexeme.len() - 1]);
         self.emit_constant(obj_val!(rlox_string), ln)
     }
 
