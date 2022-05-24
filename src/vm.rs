@@ -112,9 +112,10 @@ impl VM {
                     }
                 }
                 OpCode::Equal => {
-                    let y = self.stack_pop().clone();
-                    let x = self.stack_pop().clone();
-                    let result = bool_val!(Self::values_equal(&x, &y));
+                    let y = self.stack_pop().to_owned();
+                    let x = self.stack_pop().to_owned();
+                    let result = bool_val!(x == y);
+
                     self.stack_push(result);
                 }
                 OpCode::False => self.stack_push(bool_val!(false)),
@@ -206,29 +207,11 @@ impl VM {
     }
 
     fn concatenate(&mut self) {
-        let va = self.stack_pop().to_owned();
-        let vb = self.stack_pop().to_owned();
+        let y = self.stack_pop().to_owned();
+        let x = self.stack_pop().to_owned();
+        let concatenated = as_string_ref(&x) + as_string_ref(&y);
 
-        unsafe {
-            let b = as_string_ref(&va);
-            let a = as_string_ref(&vb);
-            let concatenated = Box::new(a + b);
-
-            self.stack_push(obj_val!(concatenated))
-        }
-    }
-
-    fn values_equal(x: &Value, y: &Value) -> bool {
-        if x.kind != y.kind {
-            false
-        } else {
-            match x.kind {
-                ValueType::Nil => true,
-                ValueType::Bool => as_bool!(x) == as_bool!(y),
-                ValueType::Number => as_number!(x) == as_number!(y),
-                ValueType::Obj => false, // todo implement
-            }
-        }
+        self.stack_push(obj_val!(concatenated))
     }
 
     fn type_check_two_operands(&mut self, validator: fn(&Value) -> bool) -> bool {
