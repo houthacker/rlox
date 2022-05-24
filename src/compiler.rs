@@ -1,8 +1,9 @@
 use crate::chunk::LineNumber;
 use crate::debug::disassemble_chunk;
+use crate::object::{Obj, ObjString};
 use crate::scanner::{Scanner, Token, TokenType};
 use crate::value::{Value, ValueType, U};
-use crate::{number_val, Chunk, OpCode};
+use crate::{number_val, obj_val, Chunk, OpCode};
 use std::ptr::NonNull;
 
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
@@ -114,6 +115,7 @@ impl Compiler {
             TokenType::Plus         => ParseRule(None,                      Some(Self::binary),     Precedence::Term),
             TokenType::Slash        => ParseRule(None,                      Some(Self::binary),     Precedence::Factor),
             TokenType::Star         => ParseRule(None,                      Some(Self::binary),     Precedence::Factor),
+            TokenType::String       => ParseRule(Some(Self::string), None, Precedence::None),
             TokenType::True         => ParseRule(Some(Self::literal),       None,                   Precedence::None),
             _                       => ParseRule(None,                      None,                   Precedence::None),
         }
@@ -234,8 +236,8 @@ impl Compiler {
             TokenType::LessEqual => self.emit_bytes(OpCode::Greater as u8, OpCode::Not as u8),
             TokenType::Minus => self.emit_byte(OpCode::Subtract as u8),
             TokenType::Plus => self.emit_byte(OpCode::Add as u8),
-            TokenType::Star => self.emit_byte(OpCode::Multiply as u8),
             TokenType::Slash => self.emit_byte(OpCode::Divide as u8),
+            TokenType::Star => self.emit_byte(OpCode::Multiply as u8),
             _ => (),
         }
     }
@@ -260,6 +262,16 @@ impl Compiler {
         let number = token.lexeme.parse::<f64>().unwrap();
 
         self.emit_constant(number_val!(number), ln);
+    }
+
+    fn string(&mut self) {
+        let prev = self.borrow_previous();
+        let ln = prev.line;
+
+        let rlox_string = Box::new(ObjString::from_slice(&prev.lexeme));
+
+        //self.emit_constant(obj_val!(Obj::get_ptr(&rlox_string.obj)), ln)
+        self.emit_constant(obj_val!(rlox_string), ln)
     }
 
     fn unary(&mut self) {

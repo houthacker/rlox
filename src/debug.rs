@@ -73,5 +73,5 @@ fn constant_long_instruction(
 fn print_constant(name: &str, idx: InstructionIndex, chunk: &Chunk) {
     print!("{:-16} {:4} '", name, idx);
     print_value(&chunk.constants[idx]);
-    print!("'\n");
+    println!("'");
 }
