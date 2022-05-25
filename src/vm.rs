@@ -2,10 +2,10 @@ use crate::debug::{disassemble_chunk, disassemble_instruction};
 use crate::object::{as_string_ref, Obj};
 use crate::value::{print_value, Value, ValueType, U};
 use crate::{as_bool, as_number, bool_val, nil_val, number_val, obj_val, Chunk, Compiler, OpCode};
-use std::mem::MaybeUninit;
+
 use std::ptr;
 
-const VM_STACK_FILLER: MaybeUninit<Value> = MaybeUninit::uninit();
+const VM_STACK_FILLER: Option<Value> = None;
 const VM_STACK_MAX: usize = 256;
 
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
@@ -18,15 +18,26 @@ pub enum InterpretResult {
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
 pub struct VM {
     ip: *mut u8,
-    stack: [MaybeUninit<Value>; VM_STACK_MAX],
+    stack: [Option<Value>; VM_STACK_MAX],
     stack_top: usize,
+    stack_max: usize,
     compiler: Compiler,
 }
 
 #[cfg(feature = "rlox_debug")]
 impl Drop for VM {
     fn drop(&mut self) {
-        println!("Dropping VM");
+        // Drop 'dangling' references left on the stack
+        if self.stack_max > 0 {
+            for n in 0..self.stack_max {
+                match self.stack[n].to_owned() {
+                    Some(v) => {
+                        drop(v);
+                    }
+                    None => (),
+                }
+            }
+        }
     }
 }
 
@@ -36,6 +47,7 @@ impl VM {
             ip: ptr::null_mut(),
             stack: [VM_STACK_FILLER; VM_STACK_MAX],
             stack_top: 0,
+            stack_max: 0,
             compiler: Compiler::new(),
         }
     }
@@ -61,7 +73,7 @@ impl VM {
                 print!("          ");
                 for sp in 0..self.stack_top {
                     print!("[ ");
-                    print_value(self.stack[sp].assume_init_ref());
+                    print_value(self.stack[sp].as_ref().unwrap_unchecked());
                     print!(" ]");
                 }
                 println!();
@@ -94,11 +106,11 @@ impl VM {
                 }
                 OpCode::Constant => {
                     let value = self.read_constant(chunk);
-                    self.stack_push(value.clone());
+                    self.stack_push(value.to_owned());
                 }
                 OpCode::ConstantLong => {
                     let value = self.read_long_constant(chunk);
-                    self.stack_push(value.clone());
+                    self.stack_push(value.to_owned());
                 }
                 OpCode::Divide => {
                     if self.validate_two_operands(
@@ -183,13 +195,25 @@ impl VM {
     }
 
     fn stack_push(&mut self, value: Value) {
-        self.stack[self.stack_top] = MaybeUninit::new(value);
+        self.stack_drop_top_in_place();
+
+        self.stack[self.stack_top] = Some(value);
         self.stack_top += 1;
+        self.stack_max = std::cmp::max(self.stack_top, self.stack_max);
+    }
+
+    fn stack_drop_top_in_place(&mut self) {
+        match self.stack[self.stack_top].to_owned() {
+            Some(v) => {
+                drop(v);
+            }
+            None => (),
+        }
     }
 
     fn stack_pop(&mut self) -> &Value {
         self.stack_top -= 1;
-        unsafe { self.stack[self.stack_top].assume_init_ref() }
+        unsafe { self.stack[self.stack_top].as_ref().unwrap_unchecked() }
     }
 
     fn stack_pop_two(&mut self) -> (&Value, &Value) {
@@ -203,20 +227,27 @@ impl VM {
         // assume self.stack_top -= 2 has been done
         unsafe {
             (
-                self.stack[self.stack_top + 1].assume_init_ref(),
-                self.stack[self.stack_top].assume_init_ref(),
+                self.stack[self.stack_top + 1].as_ref().unwrap_unchecked(),
+                self.stack[self.stack_top].as_ref().unwrap_unchecked(),
             )
         }
     }
 
     fn stack_top_negate_number(&mut self) {
-        self.stack[self.stack_top] = MaybeUninit::new(number_val!(-as_number!(unsafe {
-            self.stack[self.stack_top].assume_init_ref()
+        // in-place replacement of number values does not require
+        // dropping these values first, because they are completely
+        // stored on the (Rust) stack, and do not refer to any heap-allocated storage.
+        self.stack[self.stack_top] = Some(number_val!(-as_number!(unsafe {
+            self.stack[self.stack_top].as_ref().unwrap_unchecked()
         })))
     }
 
     fn peek(&mut self, distance: usize) -> &Value {
-        unsafe { self.stack[self.stack_top - 1 - distance].assume_init_ref() }
+        unsafe {
+            self.stack[self.stack_top - 1 - distance]
+                .as_ref()
+                .unwrap_unchecked()
+        }
     }
 
     fn is_falsey(value: &Value) -> bool {

@@ -82,12 +82,6 @@ impl PartialEq for ObjString {
     }
 }
 
-impl Drop for ObjString {
-    fn drop(&mut self) {
-        println!("Dropping string {}", self.data)
-    }
-}
-
 pub fn as_string_ref(value: &Value) -> &ObjString {
     as_obj_ref!(value)
         .as_any()
@@ -112,7 +106,7 @@ macro_rules! obj_type {
     ($arg:expr) => {{
         {
             let value: &Value = $arg;
-            as_obj_ref!(value).kind()
+            crate::as_obj_ref!(value).kind()
         }
     }};
 }

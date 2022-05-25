@@ -1,4 +1,4 @@
-use crate::value::{Value, ValueType, U};
+use crate::value::Value;
 use std::fmt::{Display, Formatter};
 
 pub type InstructionIndex = usize;

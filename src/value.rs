@@ -51,6 +51,8 @@ impl std::fmt::Debug for Value {
 
 impl Clone for Value {
     fn clone(&self) -> Self {
+        println!("Cloning Value of type {:?}", self.kind);
+
         match self.kind {
             ValueType::Nil => nil_val!(),
             ValueType::Bool => bool_val!(unsafe { self.to.boolean }),
@@ -187,8 +189,8 @@ macro_rules! number_val {
         {
             let value: f64 = $arg;
             Value {
-                kind: ValueType::Number,
-                to: U { number: value },
+                kind: crate::value::ValueType::Number,
+                to: crate::value::U { number: value },
             }
         }
     }};
