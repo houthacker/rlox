@@ -220,10 +220,10 @@ impl VM {
         self.stack_top -= 2;
 
         // call another function to prevent double use of &mut self
-        self.stack_get_two()
+        self.stack_borrow_two()
     }
 
-    fn stack_get_two(&self) -> (&Value, &Value) {
+    fn stack_borrow_two(&self) -> (&Value, &Value) {
         // assume self.stack_top -= 2 has been done
         unsafe {
             (
