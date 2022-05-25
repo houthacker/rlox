@@ -1,5 +1,5 @@
 use crate::object::{as_rstring_ref, as_string_ref, print_object, Obj, ObjType};
-use crate::{as_obj_ref, bool_val, nil_val, number_val, obj_val};
+use crate::{as_obj_ref, bool_val, nil_val, number_val, obj_type, obj_val};
 use std::fmt::Formatter;
 use std::mem::ManuallyDrop;
 
@@ -56,10 +56,20 @@ impl Clone for Value {
             ValueType::Bool => bool_val!(unsafe { self.to.boolean }),
             ValueType::Number => number_val!(unsafe { self.to.number }),
             ValueType::Obj => {
-                obj_val!(
-                    unsafe { self.to.obj.clone_obj() } /* unsafe { ManuallyDrop::into_inner(self.to.obj_ptr) } */
-                )
+                return match obj_type!(self) {
+                    ObjType::String => {
+                        obj_val!(Box::new(as_string_ref(self).to_owned()))
+                    }
+                };
             }
+        }
+    }
+}
+
+impl Drop for Value {
+    fn drop(&mut self) {
+        if self.kind == ValueType::Obj {
+            unsafe { ManuallyDrop::drop(&mut self.to.obj) }
         }
     }
 }

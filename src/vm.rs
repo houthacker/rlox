@@ -192,6 +192,23 @@ impl VM {
         unsafe { self.stack[self.stack_top].assume_init_ref() }
     }
 
+    fn stack_pop_two(&mut self) -> (&Value, &Value) {
+        self.stack_top -= 2;
+
+        // call another function to prevent double use of &mut self
+        self.stack_get_two()
+    }
+
+    fn stack_get_two(&self) -> (&Value, &Value) {
+        // assume self.stack_top -= 2 has been done
+        unsafe {
+            (
+                self.stack[self.stack_top + 1].assume_init_ref(),
+                self.stack[self.stack_top].assume_init_ref(),
+            )
+        }
+    }
+
     fn stack_top_negate_number(&mut self) {
         self.stack[self.stack_top] = MaybeUninit::new(number_val!(-as_number!(unsafe {
             self.stack[self.stack_top].assume_init_ref()
@@ -243,43 +260,50 @@ impl VM {
 
     #[inline(always)]
     fn op_add(&mut self) {
-        let (y, x) = self.pop_two();
-        self.stack_push(number_val!(as_number!(&x) + as_number!(&y)));
+        let (y, x) = self.stack_pop_two();
+        let result = number_val!(as_number!(x) + as_number!(y));
+
+        self.stack_push(result);
     }
 
     #[inline(always)]
     fn op_divide(&mut self) {
-        let (y, x) = self.pop_two();
-        self.stack_push(number_val!(as_number!(&x) / as_number!(&y)));
+        let (y, x) = self.stack_pop_two();
+        let result = number_val!(as_number!(x) / as_number!(y));
+
+        self.stack_push(result);
     }
 
     #[inline(always)]
     fn op_greater(&mut self) {
-        let (y, x) = self.pop_two();
-        self.stack_push(bool_val!(as_number!(&x) > as_number!(&y)));
+        let (y, x) = self.stack_pop_two();
+        let result = bool_val!(as_number!(x) > as_number!(y));
+
+        self.stack_push(result);
     }
 
     #[inline(always)]
     fn op_less(&mut self) {
-        let (y, x) = self.pop_two();
-        self.stack_push(bool_val!(as_number!(&x) < as_number!(&y)));
+        let (y, x) = self.stack_pop_two();
+        let result = bool_val!(as_number!(x) < as_number!(y));
+
+        self.stack_push(result);
     }
 
     #[inline(always)]
     fn op_multiply(&mut self) {
-        let (y, x) = self.pop_two();
-        self.stack_push(number_val!(as_number!(&x) * as_number!(&y)));
+        let (y, x) = self.stack_pop_two();
+        let result = number_val!(as_number!(x) * as_number!(y));
+
+        self.stack_push(result);
     }
 
     #[inline(always)]
     fn op_subtract(&mut self) {
-        let (y, x) = self.pop_two();
-        self.stack_push(number_val!(as_number!(&x) - as_number!(&y)));
-    }
+        let (y, x) = self.stack_pop_two();
+        let result = number_val!(as_number!(x) - as_number!(y));
 
-    #[inline(always)]
-    fn pop_two(&mut self) -> (Value, Value) {
-        (self.stack_pop().clone(), self.stack_pop().clone())
+        self.stack_push(result);
     }
 
     #[inline(always)]
@@ -295,7 +319,7 @@ impl VM {
         chunk.constants.get_unchecked(self.read_byte() as usize)
     }
 
-    unsafe fn read_long_constant<'b>(&mut self, chunk: &'b Chunk) -> &'b Value {
+    unsafe fn read_long_constant<'a>(&mut self, chunk: &'a Chunk) -> &'a Value {
         let le_bytes = [
             self.read_byte(),
             self.read_byte(),

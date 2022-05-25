@@ -11,14 +11,14 @@ pub enum ObjType {
 }
 
 pub trait CloneObj {
-    fn clone_obj(&self) -> Box<dyn Obj>;
+    fn clone_box(&self) -> Box<dyn Obj>;
 }
 
 impl<T> CloneObj for T
 where
     T: Clone + Obj + 'static,
 {
-    fn clone_obj(&self) -> Box<dyn Obj> {
+    fn clone_box(&self) -> Box<dyn Obj> {
         Box::new(self.clone())
     }
 }
@@ -30,8 +30,8 @@ pub trait Obj: CloneObj {
 }
 
 impl Clone for Box<dyn Obj> {
-    fn clone(&self) -> Self {
-        self.clone_obj()
+    fn clone(&self) -> Box<dyn Obj> {
+        self.clone_box()
     }
 }
 
@@ -79,6 +79,12 @@ impl ops::Add<&ObjString> for &ObjString {
 impl PartialEq for ObjString {
     fn eq(&self, other: &Self) -> bool {
         self.data == other.data
+    }
+}
+
+impl Drop for ObjString {
+    fn drop(&mut self) {
+        println!("Dropping string {}", self.data)
     }
 }
 
