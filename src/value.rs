@@ -1,22 +1,25 @@
+use crate::object::{as_rstring_ref, as_string_ref, print_object, Obj, ObjType};
+use crate::{as_obj_ref, bool_val, nil_val, number_val, obj_type, obj_val};
 use std::fmt::Formatter;
+use std::mem::ManuallyDrop;
 
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum ValueType {
     Nil,
     Bool,
     Number,
+
+    /// Heap-allocated value types
+    Obj,
 }
 
-#[repr(C)]
-#[derive(Copy, Clone)]
 pub union U {
     pub boolean: bool,
     pub number: f64,
+    pub obj: ManuallyDrop<Box<dyn Obj>>,
 }
 
-#[repr(C)]
-#[derive(Copy)]
 pub struct Value {
     pub kind: ValueType,
     pub to: U,
@@ -37,6 +40,9 @@ impl std::fmt::Debug for Value {
             ValueType::Number => {
                 debug_struct.field("value", &unsafe { self.to.number });
             }
+            ValueType::Obj => {
+                debug_struct.field("value", unsafe { &as_rstring_ref(self) });
+            }
         }
 
         debug_struct.finish()
@@ -46,22 +52,24 @@ impl std::fmt::Debug for Value {
 impl Clone for Value {
     fn clone(&self) -> Self {
         match self.kind {
-            ValueType::Nil => Value {
-                kind: ValueType::Nil,
-                to: U { number: 0.0 },
-            },
-            ValueType::Bool => Value {
-                kind: ValueType::Bool,
-                to: U {
-                    boolean: unsafe { self.to.boolean },
-                },
-            },
-            ValueType::Number => Value {
-                kind: ValueType::Number,
-                to: U {
-                    number: unsafe { self.to.number },
-                },
-            },
+            ValueType::Nil => nil_val!(),
+            ValueType::Bool => bool_val!(unsafe { self.to.boolean }),
+            ValueType::Number => number_val!(unsafe { self.to.number }),
+            ValueType::Obj => {
+                return match obj_type!(self) {
+                    ObjType::String => {
+                        obj_val!(Box::new(as_string_ref(self).to_owned()))
+                    }
+                };
+            }
+        }
+    }
+}
+
+impl Drop for Value {
+    fn drop(&mut self) {
+        if self.kind == ValueType::Obj {
+            unsafe { ManuallyDrop::drop(&mut self.to.obj) }
         }
     }
 }
@@ -76,6 +84,12 @@ impl PartialEq for Value {
             ValueType::Nil => true,
             ValueType::Bool => unsafe { self.to.boolean == other.to.boolean },
             ValueType::Number => unsafe { self.to.number == other.to.number },
+            ValueType::Obj => {
+                let a = as_string_ref(self);
+                let b = as_string_ref(other);
+
+                a == b
+            }
         }
     }
 }
@@ -92,13 +106,21 @@ impl Value {
     pub fn is_number(value: &Value) -> bool {
         value.kind == ValueType::Number
     }
+
+    pub fn is_obj(value: &Value) -> bool {
+        value.kind == ValueType::Obj
+    }
+
+    pub fn is_string(value: &Value) -> bool {
+        Value::is_obj(value) && as_obj_ref!(value).kind() == ObjType::String
+    }
 }
 
 #[macro_export]
 macro_rules! as_bool {
     ($arg:expr) => {{
         {
-            let value: Value = $arg;
+            let value: &Value = $arg;
             unsafe { value.to.boolean }
         }
     }};
@@ -108,8 +130,28 @@ macro_rules! as_bool {
 macro_rules! as_number {
     ($arg:expr) => {{
         {
-            let value: Value = $arg;
+            let value: &Value = $arg;
             unsafe { value.to.number }
+        }
+    }};
+}
+
+#[macro_export]
+macro_rules! as_obj {
+    ($arg:expr) => {{
+        {
+            let value: &Value = $arg;
+            unsafe { std::mem::ManuallyDrop::into_inner(value.to.obj) }
+        }
+    }};
+}
+
+#[macro_export]
+macro_rules! as_obj_ref {
+    ($arg:expr) => {{
+        {
+            let value: &Value = $arg;
+            unsafe { &value.to.obj }
         }
     }};
 }
@@ -145,8 +187,23 @@ macro_rules! number_val {
         {
             let value: f64 = $arg;
             Value {
-                kind: ValueType::Number,
-                to: U { number: value },
+                kind: crate::value::ValueType::Number,
+                to: crate::value::U { number: value },
+            }
+        }
+    }};
+}
+
+#[macro_export]
+macro_rules! obj_val {
+    ($arg:expr) => {{
+        {
+            let value: Box<dyn Obj> = $arg;
+            Value {
+                kind: ValueType::Obj,
+                to: U {
+                    obj: std::mem::ManuallyDrop::new(value),
+                },
             }
         }
     }};
@@ -157,5 +214,22 @@ pub fn print_value(value: &Value) {
         ValueType::Nil => print!("nil"),
         ValueType::Bool => print!("{}", unsafe { value.to.boolean }),
         ValueType::Number => print!("{}", unsafe { value.to.number }),
+        ValueType::Obj => print_object(value),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::object::ObjString;
+
+    #[test]
+    fn test_string_conversion() {
+        let s = String::from("test");
+        let b = ObjString::boxed_from_slice(&s);
+        let val1 = obj_val!(b);
+
+        println!("{}", Value::is_string(&val1));
+        println!("{}", unsafe { as_rstring_ref(&val1) });
     }
 }
