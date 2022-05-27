@@ -23,19 +23,21 @@ where
     }
 }
 
-pub trait Obj: CloneObj {
+pub trait Obj /*: CloneObj */ {
     fn kind(&self) -> ObjType;
 
     fn as_any(&self) -> &dyn Any;
 }
 
+/*
 impl Clone for Box<dyn Obj> {
     fn clone(&self) -> Box<dyn Obj> {
         self.clone_box()
     }
 }
+*/
 
-#[derive(Clone)]
+// #[derive(Clone)]
 pub struct ObjString {
     pub data: String,
 }
@@ -83,10 +85,14 @@ impl PartialEq for ObjString {
 }
 
 pub fn as_string_ref(value: &Value) -> &ObjString {
-    as_obj_ref!(value)
-        .as_any()
-        .downcast_ref::<ObjString>()
-        .unwrap()
+    unsafe {
+        as_obj_ref!(value)
+            .as_ref()
+            .unwrap()
+            .as_any()
+            .downcast_ref::<ObjString>()
+            .unwrap()
+    }
 }
 
 pub unsafe fn as_rstring_ref(value: &Value) -> &str {
@@ -106,7 +112,7 @@ macro_rules! obj_type {
     ($arg:expr) => {{
         {
             let value: &Value = $arg;
-            crate::as_obj_ref!(value).kind()
+            unsafe { crate::as_obj_ref!(value).as_ref().unwrap().kind() }
         }
     }};
 }

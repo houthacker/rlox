@@ -1,7 +1,6 @@
 use crate::object::{as_rstring_ref, as_string_ref, print_object, Obj, ObjType};
-use crate::{as_obj_ref, bool_val, nil_val, number_val, obj_type, obj_val};
+use crate::{as_obj, obj_type};
 use std::fmt::Formatter;
-use std::mem::ManuallyDrop;
 
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
 #[derive(Clone, Copy, PartialEq)]
@@ -14,15 +13,23 @@ pub enum ValueType {
     Obj,
 }
 
+#[derive(Copy, Clone)]
 pub union U {
     pub boolean: bool,
     pub number: f64,
-    pub obj: ManuallyDrop<Box<dyn Obj>>,
+    pub obj: *mut dyn Obj,
 }
 
+#[derive(Copy, Clone)]
 pub struct Value {
     pub kind: ValueType,
     pub to: U,
+}
+
+pub fn cleanup_value(value: Value) {
+    if Value::is_obj(&value) {
+        let _destroyable = as_obj!(value);
+    }
 }
 
 impl std::fmt::Debug for Value {
@@ -46,31 +53,6 @@ impl std::fmt::Debug for Value {
         }
 
         debug_struct.finish()
-    }
-}
-
-impl Clone for Value {
-    fn clone(&self) -> Self {
-        match self.kind {
-            ValueType::Nil => nil_val!(),
-            ValueType::Bool => bool_val!(unsafe { self.to.boolean }),
-            ValueType::Number => number_val!(unsafe { self.to.number }),
-            ValueType::Obj => {
-                return match obj_type!(self) {
-                    ObjType::String => {
-                        obj_val!(Box::new(as_string_ref(self).to_owned()))
-                    }
-                };
-            }
-        }
-    }
-}
-
-impl Drop for Value {
-    fn drop(&mut self) {
-        if self.kind == ValueType::Obj {
-            unsafe { ManuallyDrop::drop(&mut self.to.obj) }
-        }
     }
 }
 
@@ -112,7 +94,7 @@ impl Value {
     }
 
     pub fn is_string(value: &Value) -> bool {
-        Value::is_obj(value) && as_obj_ref!(value).kind() == ObjType::String
+        Value::is_obj(value) && obj_type!(value) == ObjType::String
     }
 }
 
@@ -120,8 +102,7 @@ impl Value {
 macro_rules! as_bool {
     ($arg:expr) => {{
         {
-            let value: &Value = $arg;
-            unsafe { value.to.boolean }
+            unsafe { $arg.to.boolean }
         }
     }};
 }
@@ -130,7 +111,7 @@ macro_rules! as_bool {
 macro_rules! as_number {
     ($arg:expr) => {{
         {
-            let value: &Value = $arg;
+            let value: Value = $arg;
             unsafe { value.to.number }
         }
     }};
@@ -140,8 +121,8 @@ macro_rules! as_number {
 macro_rules! as_obj {
     ($arg:expr) => {{
         {
-            let value: &Value = $arg;
-            unsafe { std::mem::ManuallyDrop::into_inner(value.to.obj) }
+            let value: Value = $arg;
+            unsafe { std::boxed::Box::from_raw(value.to.obj) }
         }
     }};
 }
@@ -150,8 +131,7 @@ macro_rules! as_obj {
 macro_rules! as_obj_ref {
     ($arg:expr) => {{
         {
-            let value: &Value = $arg;
-            unsafe { &value.to.obj }
+            $arg.to.obj
         }
     }};
 }
@@ -202,7 +182,7 @@ macro_rules! obj_val {
             Value {
                 kind: ValueType::Obj,
                 to: U {
-                    obj: std::mem::ManuallyDrop::new(value),
+                    obj: std::boxed::Box::into_raw(value),
                 },
             }
         }

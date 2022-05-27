@@ -1,6 +1,6 @@
 use crate::debug::{disassemble_chunk, disassemble_instruction};
 use crate::object::{as_string_ref, Obj};
-use crate::value::{print_value, Value, ValueType, U};
+use crate::value::{cleanup_value, print_value, Value, ValueType, U};
 use crate::{as_bool, as_number, bool_val, nil_val, number_val, obj_val, Chunk, Compiler, OpCode};
 
 use std::ptr;
@@ -27,12 +27,11 @@ pub struct VM {
 #[cfg(feature = "rlox_debug")]
 impl Drop for VM {
     fn drop(&mut self) {
-        // Drop 'dangling' references left on the stack
         if self.stack_max > 0 {
             for n in 0..self.stack_max {
                 match self.stack[n].to_owned() {
                     Some(v) => {
-                        drop(v);
+                        cleanup_value(v);
                     }
                     None => (),
                 }
@@ -106,11 +105,11 @@ impl VM {
                 }
                 OpCode::Constant => {
                     let value = self.read_constant(chunk);
-                    self.stack_push(value.to_owned());
+                    self.stack_push(value);
                 }
                 OpCode::ConstantLong => {
                     let value = self.read_long_constant(chunk);
-                    self.stack_push(value.to_owned());
+                    self.stack_push(value);
                 }
                 OpCode::Divide => {
                     if self.validate_two_operands(
@@ -173,11 +172,11 @@ impl VM {
                 }
                 OpCode::Nil => self.stack_push(nil_val!()),
                 OpCode::Not => {
-                    let value = self.stack_pop().clone();
+                    let value = self.stack_pop();
                     self.stack_push(bool_val!(Self::is_falsey(&value)))
                 }
                 OpCode::Return => {
-                    print_value(self.stack_pop());
+                    print_value(&self.stack_pop());
                     println!();
                     return InterpretResult::Ok;
                 }
@@ -205,30 +204,24 @@ impl VM {
     fn stack_drop_top_in_place(&mut self) {
         match self.stack[self.stack_top].to_owned() {
             Some(v) => {
-                drop(v);
+                cleanup_value(v);
             }
             None => (),
         }
     }
 
-    fn stack_pop(&mut self) -> &Value {
+    fn stack_pop(&mut self) -> Value {
         self.stack_top -= 1;
-        unsafe { self.stack[self.stack_top].as_ref().unwrap_unchecked() }
+        unsafe { self.stack[self.stack_top].unwrap_unchecked() }
     }
 
-    fn stack_pop_two(&mut self) -> (&Value, &Value) {
+    fn stack_pop_two(&mut self) -> (Value, Value) {
         self.stack_top -= 2;
 
-        // call another function to prevent double use of &mut self
-        self.stack_borrow_two()
-    }
-
-    fn stack_borrow_two(&self) -> (&Value, &Value) {
-        // assume self.stack_top -= 2 has been done
         unsafe {
             (
-                self.stack[self.stack_top + 1].as_ref().unwrap_unchecked(),
-                self.stack[self.stack_top].as_ref().unwrap_unchecked(),
+                self.stack[self.stack_top + 1].unwrap_unchecked(),
+                self.stack[self.stack_top].unwrap_unchecked(),
             )
         }
     }
@@ -238,7 +231,7 @@ impl VM {
         // dropping these values first, because they are completely
         // stored on the (Rust) stack, and do not refer to any heap-allocated storage.
         self.stack[self.stack_top] = Some(number_val!(-as_number!(unsafe {
-            self.stack[self.stack_top].as_ref().unwrap_unchecked()
+            self.stack[self.stack_top].unwrap_unchecked()
         })))
     }
 
@@ -346,11 +339,11 @@ impl VM {
     }
 
     #[inline(always)]
-    unsafe fn read_constant<'a>(&mut self, chunk: &'a Chunk) -> &'a Value {
-        chunk.constants.get_unchecked(self.read_byte() as usize)
+    unsafe fn read_constant(&mut self, chunk: &Chunk) -> Value {
+        chunk.constants[self.read_byte() as usize]
     }
 
-    unsafe fn read_long_constant<'a>(&mut self, chunk: &'a Chunk) -> &'a Value {
+    unsafe fn read_long_constant(&mut self, chunk: &Chunk) -> Value {
         let le_bytes = [
             self.read_byte(),
             self.read_byte(),
@@ -363,7 +356,7 @@ impl VM {
         ];
         let idx = usize::from_le_bytes(le_bytes);
 
-        chunk.constants.get_unchecked(idx)
+        chunk.constants[idx]
     }
 
     #[inline(always)]
