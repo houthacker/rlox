@@ -1,3 +1,6 @@
+extern crate alloc;
+extern crate core;
+
 mod chunk;
 mod compiler;
 mod object;
@@ -7,6 +10,7 @@ mod vm;
 
 #[cfg(feature = "rlox_debug")]
 mod debug;
+mod stack;
 
 use chunk::{Chunk, OpCode};
 use compiler::Compiler;

@@ -1,5 +1,3 @@
-use crate::as_obj_ref;
-use crate::obj_type;
 use crate::value::Value;
 use std::any::Any;
 use std::fmt::{Display, Formatter};
@@ -23,23 +21,22 @@ where
     }
 }
 
-pub trait Obj /*: CloneObj */ {
+pub trait Obj: CloneObj + ToString {
     fn kind(&self) -> ObjType;
 
     fn as_any(&self) -> &dyn Any;
 }
 
-/*
-impl Clone for Box<dyn Obj> {
-    fn clone(&self) -> Box<dyn Obj> {
-        self.clone_box()
-    }
-}
-*/
-
-// #[derive(Clone)]
 pub struct ObjString {
     pub data: String,
+}
+
+impl Clone for ObjString {
+    fn clone(&self) -> Self {
+        Self {
+            data: self.data.clone(),
+        }
+    }
 }
 
 impl Obj for ObjString {
@@ -59,7 +56,7 @@ impl Display for ObjString {
 }
 
 impl ObjString {
-    pub fn boxed_from_slice(value: &str) -> Box<Self> {
+    pub fn boxed_from_slice(value: &str) -> Box<dyn Obj> {
         Box::new(Self {
             data: String::from(value),
         })
@@ -67,14 +64,14 @@ impl ObjString {
 }
 
 impl ops::Add<&ObjString> for &ObjString {
-    type Output = Box<ObjString>;
+    type Output = Box<dyn Obj>;
 
     fn add(self, rhs: &ObjString) -> Self::Output {
         let mut s = String::with_capacity(self.data.len() + rhs.data.len());
         s.push_str(&self.data);
         s.push_str(&rhs.data);
 
-        Box::new(ObjString { data: s })
+        ObjString::boxed_from_slice(&s)
     }
 }
 
@@ -84,35 +81,32 @@ impl PartialEq for ObjString {
     }
 }
 
+pub fn obj_equal(lhs: &Box<dyn Obj>, rhs: &Box<dyn Obj>) -> bool {
+    let lhs_kind = (*lhs).kind();
+    if lhs_kind != (*rhs).kind() {
+        false
+    } else {
+        match lhs_kind {
+            ObjType::String => obj_as_string_ref(lhs) == obj_as_string_ref(rhs),
+        }
+    }
+}
+
+fn obj_as_string_ref(b: &Box<dyn Obj>) -> &ObjString {
+    b.as_any().downcast_ref::<ObjString>().unwrap()
+}
+
 pub fn as_string_ref(value: &Value) -> &ObjString {
-    unsafe {
-        as_obj_ref!(value)
-            .as_ref()
-            .unwrap()
-            .as_any()
-            .downcast_ref::<ObjString>()
-            .unwrap()
+    match value {
+        Value::Obj(obj) => obj.as_any().downcast_ref::<ObjString>().unwrap(),
+        _ => panic!("Value discriminant is not a Value::Obj"),
     }
 }
 
-pub unsafe fn as_rstring_ref(value: &Value) -> &str {
-    as_string_ref(value).data.as_ref()
-}
-
-pub fn print_object(value: &Value) {
-    match obj_type!(value) {
-        ObjType::String => {
-            print!("{}", as_string_ref(value));
-        }
+#[inline(always)]
+pub fn obj_type(value: &Value) -> ObjType {
+    match value {
+        Value::Obj(obj) => obj.kind(),
+        _ => panic!("Value is not an Obj"),
     }
-}
-
-#[macro_export]
-macro_rules! obj_type {
-    ($arg:expr) => {{
-        {
-            let value: &Value = $arg;
-            unsafe { crate::as_obj_ref!(value).as_ref().unwrap().kind() }
-        }
-    }};
 }

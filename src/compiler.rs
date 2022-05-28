@@ -1,9 +1,9 @@
 use crate::chunk::LineNumber;
 use crate::debug::disassemble_chunk;
-use crate::object::{Obj, ObjString};
+use crate::object::ObjString;
 use crate::scanner::{Scanner, Token, TokenType};
-use crate::value::{Value, ValueType, U};
-use crate::{number_val, obj_val, Chunk, OpCode};
+use crate::value::Value;
+use crate::{Chunk, OpCode};
 use std::ptr::NonNull;
 
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
@@ -261,15 +261,16 @@ impl Compiler {
         let ln = token.line;
         let number = token.lexeme.parse::<f64>().unwrap();
 
-        self.emit_constant(number_val!(number), ln);
+        self.emit_constant(Value::from_number(number), ln);
     }
 
     fn string(&mut self) {
         let prev = self.borrow_previous();
         let ln = prev.line;
 
-        let rlox_string = ObjString::boxed_from_slice(&prev.lexeme[1..prev.lexeme.len() - 1]);
-        self.emit_constant(obj_val!(rlox_string), ln)
+        let rlox_boxed_string = ObjString::boxed_from_slice(&prev.lexeme[1..prev.lexeme.len() - 1]);
+        let rlox_value = Value::from_obj(rlox_boxed_string);
+        self.emit_constant(rlox_value, ln);
     }
 
     fn unary(&mut self) {
@@ -332,10 +333,10 @@ mod tests {
         assert_eq!(
             chunk.constants,
             vec![
-                number_val!(5f64),
-                number_val!(4f64),
-                number_val!(3f64),
-                number_val!(2f64)
+                Value::from_number(5f64),
+                Value::from_number(4f64),
+                Value::from_number(3f64),
+                Value::from_number(2f64)
             ]
         );
 

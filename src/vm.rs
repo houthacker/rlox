@@ -1,12 +1,10 @@
 use crate::debug::{disassemble_chunk, disassemble_instruction};
-use crate::object::{as_string_ref, Obj};
-use crate::value::{cleanup_value, print_value, Value, ValueType, U};
-use crate::{as_bool, as_number, bool_val, nil_val, number_val, obj_val, Chunk, Compiler, OpCode};
+use crate::object::as_string_ref;
+use crate::value::{as_bool, as_number, print_value, Value};
+use crate::{Chunk, Compiler, OpCode};
 
+use crate::stack::Stack;
 use std::ptr;
-
-const VM_STACK_FILLER: Option<Value> = None;
-const VM_STACK_MAX: usize = 256;
 
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
 pub enum InterpretResult {
@@ -18,35 +16,15 @@ pub enum InterpretResult {
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
 pub struct VM {
     ip: *mut u8,
-    stack: [Option<Value>; VM_STACK_MAX],
-    stack_top: usize,
-    stack_max: usize,
+    stack: Stack<Value, 256>,
     compiler: Compiler,
-}
-
-#[cfg(feature = "rlox_debug")]
-impl Drop for VM {
-    fn drop(&mut self) {
-        if self.stack_max > 0 {
-            for n in 0..self.stack_max {
-                match self.stack[n].to_owned() {
-                    Some(v) => {
-                        cleanup_value(v);
-                    }
-                    None => (),
-                }
-            }
-        }
-    }
 }
 
 impl VM {
     pub fn new() -> Self {
         Self {
             ip: ptr::null_mut(),
-            stack: [VM_STACK_FILLER; VM_STACK_MAX],
-            stack_top: 0,
-            stack_max: 0,
+            stack: Stack::new(),
             compiler: Compiler::new(),
         }
     }
@@ -70,9 +48,14 @@ impl VM {
             if cfg!(feature = "rlox_debug") {
                 // Stack tracking
                 print!("          ");
-                for sp in 0..self.stack_top {
+                for sp in 0..self.stack.len() {
                     print!("[ ");
-                    print_value(self.stack[sp].as_ref().unwrap_unchecked());
+                    match self.stack.peek(sp) {
+                        Some(elem) => {
+                            print_value(&elem);
+                        }
+                        None => (),
+                    }
                     print!(" ]");
                 }
                 println!();
@@ -104,12 +87,12 @@ impl VM {
                     }
                 }
                 OpCode::Constant => {
-                    let value = self.read_constant(chunk);
-                    self.stack_push(value);
+                    let value = chunk.read_constant(self.read_byte() as usize);
+                    self.stack.push(value);
                 }
                 OpCode::ConstantLong => {
-                    let value = self.read_long_constant(chunk);
-                    self.stack_push(value);
+                    let value = chunk.read_constant(self.read_long_constant_index());
+                    self.stack.push(value);
                 }
                 OpCode::Divide => {
                     if self.validate_two_operands(
@@ -123,13 +106,13 @@ impl VM {
                     }
                 }
                 OpCode::Equal => {
-                    let y = self.stack_pop().to_owned();
-                    let x = self.stack_pop().to_owned();
-                    let result = bool_val!(x == y);
+                    let y = self.stack.pop();
+                    let x = self.stack.pop();
+                    let result = Value::from_bool(x == y);
 
-                    self.stack_push(result);
+                    self.stack.push(result);
                 }
-                OpCode::False => self.stack_push(bool_val!(false)),
+                OpCode::False => self.stack.push(Value::from_bool(false)),
                 OpCode::Greater => {
                     if self.validate_two_operands(
                         chunk,
@@ -163,100 +146,84 @@ impl VM {
                         return InterpretResult::RuntimeError;
                     }
                 }
-                OpCode::Negate => {
-                    if !Value::is_number(self.peek(0)) {
-                        self.runtime_error(chunk, "Operand must be a number.");
-                        return InterpretResult::RuntimeError;
+                OpCode::Negate => match self.stack.peek(0) {
+                    Some(elem) => {
+                        if !Value::is_number(&elem) {
+                            self.runtime_error(chunk, "Operand must be a number.");
+                            return InterpretResult::RuntimeError;
+                        }
+                        self.stack_top_negate_number();
                     }
-                    self.stack_top_negate_number();
-                }
-                OpCode::Nil => self.stack_push(nil_val!()),
-                OpCode::Not => {
-                    let value = self.stack_pop();
-                    self.stack_push(bool_val!(Self::is_falsey(&value)))
-                }
-                OpCode::Return => {
-                    print_value(&self.stack_pop());
-                    println!();
-                    return InterpretResult::Ok;
-                }
+                    None => (),
+                },
+                OpCode::Nil => self.stack.push(Value::from_nil()),
+                OpCode::Not => match self.stack.pop() {
+                    Some(elem) => self.stack.push(Value::from_bool(Self::is_falsey(&elem))),
+                    None => (),
+                },
+                OpCode::Return => match self.stack.pop() {
+                    Some(elem) => {
+                        print_value(&elem);
+                        println!();
+                        return InterpretResult::Ok;
+                    }
+                    None => panic!("StackUnderFlow"),
+                },
                 OpCode::Subtract => {
                     self.op_subtract();
                 }
-                OpCode::True => self.stack_push(bool_val!(true)),
+                OpCode::True => self.stack.push(Value::from_bool(true)),
             };
         }
     }
 
-    fn reset_stack(&mut self) {
-        self.stack = [VM_STACK_FILLER; VM_STACK_MAX];
-        self.stack_top = 0;
+    fn stack_pop_two(&mut self) -> Option<(Value, Value)> {
+        if self.stack.len() >= 2 {
+            Some((self.stack.pop().unwrap(), self.stack.pop().unwrap()))
+        } else {
+            None
+        }
     }
 
-    fn stack_push(&mut self, value: Value) {
-        self.stack_drop_top_in_place();
-
-        self.stack[self.stack_top] = Some(value);
-        self.stack_top += 1;
-        self.stack_max = std::cmp::max(self.stack_top, self.stack_max);
+    unsafe fn stack_pop_two_unchecked(&mut self) -> (Value, Value) {
+        (
+            self.stack.pop().unwrap_unchecked(),
+            self.stack.pop().unwrap_unchecked(),
+        )
     }
 
-    fn stack_drop_top_in_place(&mut self) {
-        match self.stack[self.stack_top].to_owned() {
-            Some(v) => {
-                cleanup_value(v);
+    fn stack_top_negate_number(&mut self) {
+        match self.stack.peek(0) {
+            Some(elem) => {
+                let replacement = Value::from_number(-as_number(elem));
+                self.stack.replace_top(replacement);
             }
             None => (),
         }
     }
 
-    fn stack_pop(&mut self) -> Value {
-        self.stack_top -= 1;
-        unsafe { self.stack[self.stack_top].unwrap_unchecked() }
-    }
-
-    fn stack_pop_two(&mut self) -> (Value, Value) {
-        self.stack_top -= 2;
-
-        unsafe {
-            (
-                self.stack[self.stack_top + 1].unwrap_unchecked(),
-                self.stack[self.stack_top].unwrap_unchecked(),
-            )
-        }
-    }
-
-    fn stack_top_negate_number(&mut self) {
-        // in-place replacement of number values does not require
-        // dropping these values first, because they are completely
-        // stored on the (Rust) stack, and do not refer to any heap-allocated storage.
-        self.stack[self.stack_top] = Some(number_val!(-as_number!(unsafe {
-            self.stack[self.stack_top].unwrap_unchecked()
-        })))
-    }
-
-    fn peek(&mut self, distance: usize) -> &Value {
-        unsafe {
-            self.stack[self.stack_top - 1 - distance]
-                .as_ref()
-                .unwrap_unchecked()
-        }
-    }
-
     fn is_falsey(value: &Value) -> bool {
-        Value::is_nil(value) || (Value::is_bool(value) && !as_bool!(value))
+        Value::is_nil(value) || (Value::is_bool(value) && !as_bool(value))
     }
 
     fn concatenate(&mut self) {
-        let y = self.stack_pop().to_owned();
-        let x = self.stack_pop().to_owned();
-        let concatenated = as_string_ref(&x) + as_string_ref(&y);
-
-        self.stack_push(obj_val!(concatenated))
+        match self.stack_pop_two() {
+            Some((y, x)) => {
+                let concatenated = as_string_ref(&x) + as_string_ref(&y);
+                self.stack.push(Value::from_obj(concatenated))
+            }
+            None => (),
+        }
     }
 
     fn type_check_two_operands(&mut self, validator: fn(&Value) -> bool) -> bool {
-        validator(self.peek(0)) && validator(self.peek(1))
+        match self.stack.peek(0) {
+            Some(rhs) => match self.stack.peek(1) {
+                Some(lhs) => validator(&lhs) && validator(&rhs),
+                None => false,
+            },
+            None => false,
+        }
     }
 
     fn validate_two_operands(
@@ -279,55 +246,55 @@ impl VM {
         let line = chunk.get_line(offset);
         eprintln!("[line {}] in script", line.no);
 
-        self.reset_stack();
+        self.stack.reset();
     }
 
     #[inline(always)]
     fn op_add(&mut self) {
-        let (y, x) = self.stack_pop_two();
-        let result = number_val!(as_number!(x) + as_number!(y));
+        let (y, x) = unsafe { self.stack_pop_two_unchecked() };
+        let result = Value::from_number(as_number(&x) + as_number(&y));
 
-        self.stack_push(result);
+        self.stack.push(result);
     }
 
     #[inline(always)]
     fn op_divide(&mut self) {
-        let (y, x) = self.stack_pop_two();
-        let result = number_val!(as_number!(x) / as_number!(y));
+        let (y, x) = unsafe { self.stack_pop_two_unchecked() };
+        let result = Value::from_number(as_number(&x) / as_number(&y));
 
-        self.stack_push(result);
+        self.stack.push(result);
     }
 
     #[inline(always)]
     fn op_greater(&mut self) {
-        let (y, x) = self.stack_pop_two();
-        let result = bool_val!(as_number!(x) > as_number!(y));
+        let (y, x) = unsafe { self.stack_pop_two_unchecked() };
+        let result = Value::from_bool(as_number(&x) > as_number(&y));
 
-        self.stack_push(result);
+        self.stack.push(result);
     }
 
     #[inline(always)]
     fn op_less(&mut self) {
-        let (y, x) = self.stack_pop_two();
-        let result = bool_val!(as_number!(x) < as_number!(y));
+        let (y, x) = unsafe { self.stack_pop_two_unchecked() };
+        let result = Value::from_bool(as_number(&x) < as_number(&y));
 
-        self.stack_push(result);
+        self.stack.push(result);
     }
 
     #[inline(always)]
     fn op_multiply(&mut self) {
-        let (y, x) = self.stack_pop_two();
-        let result = number_val!(as_number!(x) * as_number!(y));
+        let (y, x) = unsafe { self.stack_pop_two_unchecked() };
+        let result = Value::from_number(as_number(&x) * as_number(&y));
 
-        self.stack_push(result);
+        self.stack.push(result);
     }
 
     #[inline(always)]
     fn op_subtract(&mut self) {
-        let (y, x) = self.stack_pop_two();
-        let result = number_val!(as_number!(x) - as_number!(y));
+        let (y, x) = unsafe { self.stack_pop_two_unchecked() };
+        let result = Value::from_number(as_number(&x) - as_number(&y));
 
-        self.stack_push(result);
+        self.stack.push(result);
     }
 
     #[inline(always)]
@@ -338,12 +305,7 @@ impl VM {
         byte
     }
 
-    #[inline(always)]
-    unsafe fn read_constant(&mut self, chunk: &Chunk) -> Value {
-        chunk.constants[self.read_byte() as usize]
-    }
-
-    unsafe fn read_long_constant(&mut self, chunk: &Chunk) -> Value {
+    unsafe fn read_long_constant_index(&mut self) -> usize {
         let le_bytes = [
             self.read_byte(),
             self.read_byte(),
@@ -354,9 +316,8 @@ impl VM {
             0,
             0,
         ];
-        let idx = usize::from_le_bytes(le_bytes);
 
-        chunk.constants[idx]
+        usize::from_le_bytes(le_bytes)
     }
 
     #[inline(always)]
