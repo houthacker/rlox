@@ -130,11 +130,13 @@ pub fn print_value(value: &Value) {
 mod tests {
     use super::*;
     use crate::object::{value_as_rlox_string_ref, ObjString};
+    use string_interner::StringInterner;
 
     #[test]
     fn test_string_conversion() {
+        let mut interner = StringInterner::new();
         let s = String::from("test");
-        let b = ObjString::take_string(s);
+        let b = ObjString::take_string(s, &mut interner);
         let val1 = Value::from_obj(Box::new(b));
 
         println!("{}", Value::is_string(&val1));

@@ -1,7 +1,8 @@
 use crate::value::Value;
 use std::any::Any;
 use std::fmt::{Display, Formatter};
-use std::ops;
+
+use string_interner::StringInterner;
 
 #[derive(Copy, Clone, PartialEq)]
 pub enum ObjType {
@@ -28,15 +29,7 @@ pub trait Obj: CloneObj + ToString {
 }
 
 pub struct ObjString {
-    pub data: String,
-}
-
-impl Clone for ObjString {
-    fn clone(&self) -> Self {
-        Self {
-            data: self.data.clone(),
-        }
-    }
+    data: *const str,
 }
 
 impl Obj for ObjString {
@@ -49,39 +42,56 @@ impl Obj for ObjString {
     }
 }
 
+impl PartialEq for ObjString {
+    fn eq(&self, other: &Self) -> bool {
+        self.data == other.data
+    }
+}
+
+impl Eq for ObjString {}
+
+impl Clone for ObjString {
+    fn clone(&self) -> Self {
+        Self { data: self.data }
+    }
+}
+
 impl Display for ObjString {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.data)
+        write!(f, "{}", self.data())
     }
 }
 
 impl ObjString {
-    pub fn copy_string(value: &str) -> Self {
+    pub fn copy_string(value: &str, interner: &mut StringInterner) -> Self {
+        let symbol = interner.get_or_intern(value);
+
         Self {
-            data: String::from(value),
+            data: interner.resolve(symbol).unwrap(),
         }
     }
 
-    pub fn take_string(value: String) -> Self {
-        Self { data: value }
+    pub fn take_string(value: String, interner: &mut StringInterner) -> Self {
+        let symbol = interner.get_or_intern(value);
+
+        Self {
+            data: interner.resolve(symbol).unwrap(),
+        }
     }
-}
 
-impl ops::Add<&ObjString> for &ObjString {
-    type Output = ObjString;
-
-    fn add(self, rhs: &ObjString) -> Self::Output {
-        let mut s = String::with_capacity(self.data.len() + rhs.data.len());
-        s.push_str(&self.data);
-        s.push_str(&rhs.data);
-
-        ObjString::take_string(s)
+    pub fn data(&self) -> &str {
+        unsafe { &*self.data }
     }
-}
 
-impl PartialEq for ObjString {
-    fn eq(&self, other: &Self) -> bool {
-        self.data == other.data
+    pub fn concat(lhs: &ObjString, rhs: &ObjString, interner: &mut StringInterner) -> Self {
+        let x = [
+            lhs.data().as_bytes().to_owned(),
+            rhs.data().as_bytes().to_owned(),
+        ]
+        .concat();
+
+        let str = String::from_utf8(x).unwrap();
+        ObjString::take_string(str, interner)
     }
 }
 
