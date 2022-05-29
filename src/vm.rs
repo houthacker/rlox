@@ -1,5 +1,5 @@
 use crate::debug::{disassemble_chunk, disassemble_instruction};
-use crate::object::as_string_ref;
+use crate::object::value_as_rlox_string_ref;
 use crate::value::{as_bool, as_number, print_value, Value};
 use crate::{Chunk, Compiler, OpCode};
 
@@ -52,7 +52,7 @@ impl VM {
                     print!("[ ");
                     match self.stack.peek(sp) {
                         Some(elem) => {
-                            print_value(&elem);
+                            print_value(elem);
                         }
                         None => (),
                     }
@@ -148,7 +148,7 @@ impl VM {
                 }
                 OpCode::Negate => match self.stack.peek(0) {
                     Some(elem) => {
-                        if !Value::is_number(&elem) {
+                        if !Value::is_number(elem) {
                             self.runtime_error(chunk, "Operand must be a number.");
                             return InterpretResult::RuntimeError;
                         }
@@ -209,8 +209,8 @@ impl VM {
     fn concatenate(&mut self) {
         match self.stack_pop_two() {
             Some((y, x)) => {
-                let concatenated = as_string_ref(&x) + as_string_ref(&y);
-                self.stack.push(Value::from_obj(concatenated))
+                let concatenated = value_as_rlox_string_ref(&x) + value_as_rlox_string_ref(&y);
+                self.stack.push(Value::from_obj(Box::new(concatenated)))
             }
             None => (),
         }
@@ -219,7 +219,7 @@ impl VM {
     fn type_check_two_operands(&mut self, validator: fn(&Value) -> bool) -> bool {
         match self.stack.peek(0) {
             Some(rhs) => match self.stack.peek(1) {
-                Some(lhs) => validator(&lhs) && validator(&rhs),
+                Some(lhs) => validator(lhs) && validator(rhs),
                 None => false,
             },
             None => false,

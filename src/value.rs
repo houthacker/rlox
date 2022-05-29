@@ -129,15 +129,15 @@ pub fn print_value(value: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::object::{as_string_ref, ObjString};
+    use crate::object::{value_as_rlox_string_ref, ObjString};
 
     #[test]
     fn test_string_conversion() {
         let s = String::from("test");
-        let b = ObjString::boxed_from_slice(&s);
-        let val1 = Value::from_obj(b);
+        let b = ObjString::take_string(s);
+        let val1 = Value::from_obj(Box::new(b));
 
         println!("{}", Value::is_string(&val1));
-        println!("{}", as_string_ref(&val1));
+        println!("{}", value_as_rlox_string_ref(&val1));
     }
 }

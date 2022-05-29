@@ -56,22 +56,26 @@ impl Display for ObjString {
 }
 
 impl ObjString {
-    pub fn boxed_from_slice(value: &str) -> Box<dyn Obj> {
-        Box::new(Self {
+    pub fn copy_string(value: &str) -> Self {
+        Self {
             data: String::from(value),
-        })
+        }
+    }
+
+    pub fn take_string(value: String) -> Self {
+        Self { data: value }
     }
 }
 
 impl ops::Add<&ObjString> for &ObjString {
-    type Output = Box<dyn Obj>;
+    type Output = ObjString;
 
     fn add(self, rhs: &ObjString) -> Self::Output {
         let mut s = String::with_capacity(self.data.len() + rhs.data.len());
         s.push_str(&self.data);
         s.push_str(&rhs.data);
 
-        ObjString::boxed_from_slice(&s)
+        ObjString::take_string(s)
     }
 }
 
@@ -87,16 +91,16 @@ pub fn obj_equal(lhs: &Box<dyn Obj>, rhs: &Box<dyn Obj>) -> bool {
         false
     } else {
         match lhs_kind {
-            ObjType::String => obj_as_string_ref(lhs) == obj_as_string_ref(rhs),
+            ObjType::String => obj_as_rlox_string_ref(lhs) == obj_as_rlox_string_ref(rhs),
         }
     }
 }
 
-fn obj_as_string_ref(b: &Box<dyn Obj>) -> &ObjString {
+fn obj_as_rlox_string_ref(b: &Box<dyn Obj>) -> &ObjString {
     b.as_any().downcast_ref::<ObjString>().unwrap()
 }
 
-pub fn as_string_ref(value: &Value) -> &ObjString {
+pub fn value_as_rlox_string_ref(value: &Value) -> &ObjString {
     match value {
         Value::Obj(obj) => obj.as_any().downcast_ref::<ObjString>().unwrap(),
         _ => panic!("Value discriminant is not a Value::Obj"),
