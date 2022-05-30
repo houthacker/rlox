@@ -63,7 +63,6 @@ pub struct Line {
 }
 
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
-#[derive(Clone)]
 pub struct Chunk {
     pub code: Vec<u8>,
     pub lines: Vec<Line>,
@@ -109,8 +108,8 @@ impl Chunk {
 
                 // rlox supports constant indexes up to 24 bits, so assert the last byte is zero
                 if bytes[3] == 0 {
-                    for i in 0..=2 {
-                        self.write(bytes[i], line);
+                    for b in &bytes[..3] {
+                        self.write(*b, line);
                     }
 
                     return;
@@ -119,6 +118,10 @@ impl Chunk {
                 panic!("Too many constants")
             }
         }
+    }
+
+    pub fn read_constant(&self, index: usize) -> Value {
+        self.constants[index].clone()
     }
 
     /// Returns the source code line at which the given instruction
@@ -188,7 +191,6 @@ impl Chunk {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::number_val;
 
     #[test]
     fn chunk_create() {
@@ -223,7 +225,7 @@ mod tests {
     fn chunk_write_constant() {
         let mut chunk = Chunk::new();
 
-        chunk.write_constant(number_val!(1.337), 2);
+        chunk.write_constant(Value::from_number(1.337), 2);
         assert_eq!(chunk.lines.len(), 1);
         assert_eq!(
             chunk.lines.get(0),
@@ -238,7 +240,7 @@ mod tests {
         assert_eq!(chunk.code.get(1), Some(&0));
 
         assert_eq!(chunk.constants.len(), 1);
-        assert_eq!(chunk.constants.get(0), Some(&number_val!(1.337)));
+        assert_eq!(chunk.constants.get(0), Some(&Value::from_number(1.337)));
     }
 
     #[test]
@@ -247,7 +249,7 @@ mod tests {
         let max = 257;
 
         for i in 1..=max {
-            chunk.write_constant(number_val!(1.337), i);
+            chunk.write_constant(Value::from_number(1.337), i);
         }
 
         assert_eq!(chunk.code.len(), 516);
