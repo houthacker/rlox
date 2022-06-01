@@ -1,11 +1,10 @@
 use crate::chunk::LineNumber;
 use crate::debug::disassemble_chunk;
-use crate::object::ObjString;
+use crate::object::{Obj, ObjString};
 use crate::scanner::{Scanner, Token, TokenType};
 use crate::value::Value;
 use crate::{Chunk, OpCode};
 use std::ptr::NonNull;
-use string_interner::StringInterner;
 
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
 #[derive(Copy, Clone, PartialEq, PartialOrd)]
@@ -85,7 +84,6 @@ pub struct Compiler {
     parser: Parser,
     scanner: Option<Scanner>,
     compiling_chunk: NonNull<Chunk>,
-    interner: Option<*mut StringInterner>,
 }
 
 impl Compiler {
@@ -94,7 +92,6 @@ impl Compiler {
             parser: Parser::new(),
             scanner: None,
             compiling_chunk: NonNull::dangling(),
-            interner: None,
         }
     }
 
@@ -124,13 +121,7 @@ impl Compiler {
         }
     }
 
-    pub fn compile(
-        &mut self,
-        source: String,
-        chunk: &mut Chunk,
-        interner: &mut StringInterner,
-    ) -> bool {
-        self.interner = Some(interner);
+    pub fn compile(&mut self, source: String, chunk: &mut Chunk) -> bool {
         self.scanner = Some(Scanner::new(source));
         self.compiling_chunk = NonNull::from(chunk);
 
@@ -225,7 +216,6 @@ impl Compiler {
 
     fn end_compiler(&mut self) {
         self.emit_return();
-        self.interner = None;
 
         if cfg!(feature = "rlox_debug") && !self.parser.had_error {
             disassemble_chunk(self.current_chunk(), "code");
@@ -275,13 +265,12 @@ impl Compiler {
     }
 
     fn string(&mut self) {
-        let interner = unsafe { &mut *self.interner.unwrap_unchecked() };
         let prev = self.borrow_previous();
         let ln = prev.line;
 
         let slice = &prev.lexeme[1..prev.lexeme.len() - 1];
-        let rlox_boxed_string = ObjString::copy_string(slice, interner);
-        let rlox_value = Value::from_obj(Box::new(rlox_boxed_string));
+        let rlox_boxed_string = ObjString::copy_string(slice);
+        let rlox_value = Value::from_obj(Obj::String(rlox_boxed_string));
         self.emit_constant(rlox_value, ln);
     }
 
@@ -333,16 +322,14 @@ impl Compiler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use string_interner::StringInterner;
 
     #[test]
     fn compile_numeric_binary_unary() {
-        let mut interner = StringInterner::new();
         let mut compiler = Compiler::new();
         let source = String::from("!(5 - 4 > 3 * 2 == !nil)");
         let mut chunk = Chunk::new();
 
-        assert!(compiler.compile(source, &mut chunk, &mut interner));
+        assert!(compiler.compile(source, &mut chunk));
 
         assert_eq!(
             chunk.constants,

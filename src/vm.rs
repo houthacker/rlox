@@ -1,11 +1,10 @@
 use crate::debug::{disassemble_chunk, disassemble_instruction};
-use crate::object::{value_as_rlox_string_ref, ObjString};
+use crate::object::{value_as_rlox_string, Obj};
 use crate::value::{as_bool, as_number, print_value, Value};
 use crate::{Chunk, Compiler, OpCode};
 
 use crate::stack::Stack;
 use std::ptr;
-use string_interner::StringInterner;
 
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
 pub enum InterpretResult {
@@ -16,7 +15,6 @@ pub enum InterpretResult {
 
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
 pub struct VM {
-    interner: StringInterner,
     ip: *mut u8,
     stack: Stack<Value, 256>,
     compiler: Compiler,
@@ -25,7 +23,6 @@ pub struct VM {
 impl VM {
     pub fn new() -> Self {
         Self {
-            interner: StringInterner::new(),
             ip: ptr::null_mut(),
             stack: Stack::new(),
             compiler: Compiler::new(),
@@ -35,10 +32,7 @@ impl VM {
     pub fn interpret(&mut self, source: String) -> InterpretResult {
         let mut chunk = Chunk::new();
 
-        if !self
-            .compiler
-            .compile(source, &mut chunk, &mut self.interner)
-        {
+        if !self.compiler.compile(source, &mut chunk) {
             return InterpretResult::CompileError;
         }
 
@@ -183,14 +177,6 @@ impl VM {
         }
     }
 
-    fn stack_pop_two(&mut self) -> Option<(Value, Value)> {
-        if self.stack.len() >= 2 {
-            Some((self.stack.pop().unwrap(), self.stack.pop().unwrap()))
-        } else {
-            None
-        }
-    }
-
     unsafe fn stack_pop_two_unchecked(&mut self) -> (Value, Value) {
         (
             self.stack.pop().unwrap_unchecked(),
@@ -216,12 +202,8 @@ impl VM {
         let rhs = self.stack.pop();
         let lhs = self.stack.pop();
         if let (Some(y), Some(x)) = (rhs, lhs) {
-            let concatenated = ObjString::concat(
-                value_as_rlox_string_ref(&x),
-                value_as_rlox_string_ref(&y),
-                &mut self.interner,
-            );
-            self.stack.push(Value::from_obj(Box::new(concatenated)))
+            let concatenated = value_as_rlox_string(x) + value_as_rlox_string(y);
+            self.stack.push(Value::from_obj(Obj::String(concatenated)))
         }
     }
 
