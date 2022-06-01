@@ -1,44 +1,63 @@
 use crate::value::Value;
-use std::any::Any;
 use std::fmt::{Display, Formatter};
+use std::hash::{Hash, Hasher};
+use std::ops;
 
-use string_interner::StringInterner;
-
-#[derive(Copy, Clone, PartialEq)]
-pub enum ObjType {
-    String,
+pub enum Obj {
+    String(ObjString),
 }
 
-pub trait CloneObj {
-    fn clone_box(&self) -> Box<dyn Obj>;
-}
-
-impl<T> CloneObj for T
-where
-    T: Clone + Obj + 'static,
-{
-    fn clone_box(&self) -> Box<dyn Obj> {
-        Box::new(self.clone())
+impl Clone for Obj {
+    fn clone(&self) -> Self {
+        match self {
+            Obj::String(obj_string) => Obj::String(obj_string.clone()),
+        }
     }
 }
 
-pub trait Obj: CloneObj + ToString {
-    fn kind(&self) -> ObjType;
+impl PartialEq for Obj {
+    fn eq(&self, other: &Self) -> bool {
+        use std::mem::discriminant;
 
-    fn as_any(&self) -> &dyn Any;
+        if discriminant(self) != discriminant(other) {
+            false
+        } else {
+            match (self, other) {
+                (Obj::String(lhs), Obj::String(rhs)) => lhs == rhs,
+            }
+        }
+    }
+}
+
+impl Display for Obj {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Obj::String(obj_string) => write!(f, "{}", obj_string),
+        }
+    }
 }
 
 pub struct ObjString {
-    data: *const str,
+    data: String,
 }
 
-impl Obj for ObjString {
-    fn kind(&self) -> ObjType {
-        ObjType::String
+impl Clone for ObjString {
+    fn clone(&self) -> Self {
+        Self {
+            data: self.data.clone(),
+        }
     }
+}
 
-    fn as_any(&self) -> &dyn Any {
-        self
+impl ops::Add for ObjString {
+    type Output = ObjString;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        let mut concatenated = String::with_capacity(self.data.len() + rhs.data.len());
+        concatenated.push_str(&self.data);
+        concatenated.push_str(&rhs.data);
+
+        ObjString::take_string(concatenated)
     }
 }
 
@@ -50,77 +69,58 @@ impl PartialEq for ObjString {
 
 impl Eq for ObjString {}
 
-impl Clone for ObjString {
-    fn clone(&self) -> Self {
-        Self { data: self.data }
-    }
-}
-
 impl Display for ObjString {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.data())
     }
 }
 
-impl ObjString {
-    pub fn copy_string(value: &str, interner: &mut StringInterner) -> Self {
-        let symbol = interner.get_or_intern(value);
+impl Hash for ObjString {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.data.hash(state);
+    }
+}
 
+impl ObjString {
+    pub fn copy_string(value: &str) -> Self {
         Self {
-            data: interner.resolve(symbol).unwrap(),
+            data: String::from(value),
         }
     }
 
-    pub fn take_string(value: String, interner: &mut StringInterner) -> Self {
-        let symbol = interner.get_or_intern(value);
-
-        Self {
-            data: interner.resolve(symbol).unwrap(),
-        }
+    pub fn take_string(value: String) -> Self {
+        Self { data: value }
     }
 
     pub fn data(&self) -> &str {
-        unsafe { &*self.data }
-    }
-
-    pub fn concat(lhs: &ObjString, rhs: &ObjString, interner: &mut StringInterner) -> Self {
-        let x = [
-            lhs.data().as_bytes().to_owned(),
-            rhs.data().as_bytes().to_owned(),
-        ]
-        .concat();
-
-        let str = String::from_utf8(x).unwrap();
-        ObjString::take_string(str, interner)
+        &self.data
     }
 }
 
-pub fn obj_equal(lhs: &Box<dyn Obj>, rhs: &Box<dyn Obj>) -> bool {
-    let lhs_kind = (*lhs).kind();
-    if lhs_kind != (*rhs).kind() {
-        false
-    } else {
-        match lhs_kind {
-            ObjType::String => obj_as_rlox_string_ref(lhs) == obj_as_rlox_string_ref(rhs),
-        }
+pub fn obj_as_rlox_string(obj: Obj) -> ObjString {
+    match obj {
+        Obj::String(obj_string) => obj_string,
     }
 }
 
-fn obj_as_rlox_string_ref(b: &Box<dyn Obj>) -> &ObjString {
-    b.as_any().downcast_ref::<ObjString>().unwrap()
+pub fn obj_as_rlox_string_ref(obj: &Obj) -> &ObjString {
+    match obj {
+        Obj::String(obj_string) => obj_string,
+    }
+}
+
+pub fn value_as_rlox_string(value: Value) -> ObjString {
+    if let Value::Obj(obj) = value {
+        return obj_as_rlox_string(obj);
+    }
+
+    panic!("Given Value is not an Obj")
 }
 
 pub fn value_as_rlox_string_ref(value: &Value) -> &ObjString {
-    match value {
-        Value::Obj(obj) => obj.as_any().downcast_ref::<ObjString>().unwrap(),
-        _ => panic!("Value discriminant is not a Value::Obj"),
+    if let Value::Obj(obj) = value {
+        return obj_as_rlox_string_ref(obj);
     }
-}
 
-#[inline(always)]
-pub fn obj_type(value: &Value) -> ObjType {
-    match value {
-        Value::Obj(obj) => obj.kind(),
-        _ => panic!("Value is not an Obj"),
-    }
+    panic!("Given Value is not an Obj")
 }

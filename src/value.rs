@@ -1,11 +1,11 @@
-use crate::object::{obj_equal, obj_type, Obj, ObjType};
+use crate::object::Obj;
 use std::fmt::Formatter;
 
 pub enum Value {
     Nil(),
     Boolean(bool),
     Number(f64),
-    Obj(Box<dyn Obj>),
+    Obj(Obj),
 }
 
 impl Clone for Value {
@@ -14,7 +14,7 @@ impl Clone for Value {
             Value::Nil() => Value::Nil(),
             Value::Boolean(b) => Value::from_bool(*b),
             Value::Number(n) => Value::from_number(*n),
-            Value::Obj(obj) => Value::from_obj(obj.clone_box()),
+            Value::Obj(obj) => Value::Obj(obj.clone()),
         }
     }
 }
@@ -53,7 +53,7 @@ impl PartialEq for Value {
             (Value::Nil(), Value::Nil()) => true,
             (Value::Boolean(lhs), Value::Boolean(rhs)) => *lhs == *rhs,
             (Value::Number(lhs), Value::Number(rhs)) => *lhs == *rhs,
-            (Value::Obj(lhs), Value::Obj(rhs)) => obj_equal(lhs, rhs),
+            (Value::Obj(lhs), Value::Obj(rhs)) => lhs == rhs,
             _ => false,
         }
     }
@@ -76,7 +76,7 @@ impl Value {
     }
 
     #[inline(always)]
-    pub fn from_obj(value: Box<dyn Obj>) -> Value {
+    pub fn from_obj(value: Obj) -> Value {
         Value::Obj(value)
     }
 
@@ -92,12 +92,13 @@ impl Value {
         matches!(value, &Value::Number(_))
     }
 
-    pub fn is_obj(value: &Value) -> bool {
-        matches!(value, &Value::Obj(_))
-    }
-
     pub fn is_string(value: &Value) -> bool {
-        Value::is_obj(value) && obj_type(value) == ObjType::String
+        match value {
+            Value::Obj(obj) => match obj {
+                Obj::String(_not_used) => true,
+            },
+            _ => false,
+        }
     }
 }
 
@@ -122,7 +123,7 @@ pub fn print_value(value: &Value) {
         Value::Nil() => print!("nil"),
         Value::Boolean(b) => print!("{}", b),
         Value::Number(n) => print!("{}", n),
-        Value::Obj(obj) => print!("{}", obj.to_string()),
+        Value::Obj(obj) => print!("{}", obj),
     }
 }
 
@@ -130,14 +131,12 @@ pub fn print_value(value: &Value) {
 mod tests {
     use super::*;
     use crate::object::{value_as_rlox_string_ref, ObjString};
-    use string_interner::StringInterner;
 
     #[test]
     fn test_string_conversion() {
-        let mut interner = StringInterner::new();
         let s = String::from("test");
-        let b = ObjString::take_string(s, &mut interner);
-        let val1 = Value::from_obj(Box::new(b));
+        let b = ObjString::take_string(s);
+        let val1 = Value::from_obj(Obj::String(b));
 
         println!("{}", Value::is_string(&val1));
         println!("{}", value_as_rlox_string_ref(&val1));
