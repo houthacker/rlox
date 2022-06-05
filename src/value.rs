@@ -8,6 +8,12 @@ pub enum Value {
     Obj(Obj),
 }
 
+impl Default for Value {
+    fn default() -> Self {
+        Value::Nil()
+    }
+}
+
 impl Clone for Value {
     fn clone(&self) -> Self {
         match self {

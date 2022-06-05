@@ -1,4 +1,5 @@
 use crate::value::Value;
+use std::collections::hash_map::DefaultHasher;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::ops;
@@ -38,13 +39,15 @@ impl Display for Obj {
 }
 
 pub struct ObjString {
-    data: String,
+    pub data: String,
+    pub hash: u64,
 }
 
 impl Clone for ObjString {
     fn clone(&self) -> Self {
         Self {
             data: self.data.clone(),
+            hash: self.hash,
         }
     }
 }
@@ -71,7 +74,7 @@ impl Eq for ObjString {}
 
 impl Display for ObjString {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.data())
+        write!(f, "{}", self.data)
     }
 }
 
@@ -83,17 +86,23 @@ impl Hash for ObjString {
 
 impl ObjString {
     pub fn copy_string(value: &str) -> Self {
+        let mut hasher = DefaultHasher::new();
+        value.hash(&mut hasher);
+
         Self {
             data: String::from(value),
+            hash: hasher.finish(),
         }
     }
 
     pub fn take_string(value: String) -> Self {
-        Self { data: value }
-    }
+        let mut hasher = DefaultHasher::new();
+        value.hash(&mut hasher);
 
-    pub fn data(&self) -> &str {
-        &self.data
+        Self {
+            data: value,
+            hash: hasher.finish(),
+        }
     }
 }
 

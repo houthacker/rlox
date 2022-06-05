@@ -11,6 +11,7 @@ mod vm;
 #[cfg(feature = "rlox_debug")]
 mod debug;
 mod stack;
+mod table;
 
 use chunk::{Chunk, OpCode};
 use compiler::Compiler;
