@@ -125,7 +125,7 @@ impl<K: Hash + PartialEq, V> Table<K, V> {
     pub fn insert(&mut self, mut key: K, value: V) -> bool {
         if self.is_at_capacity() {
             let new_capacity = grow_capacity(self.capacity);
-            self.grow(new_capacity);
+            unsafe { self.grow(new_capacity) };
         }
 
         let (_ignored, entry) = self.find_entry(&mut key, self.capacity);
@@ -204,7 +204,7 @@ impl<K: Hash + PartialEq, V> Table<K, V> {
         }
     }
 
-    fn grow(&mut self, new_capacity: usize) {
+    unsafe fn grow(&mut self, new_capacity: usize) {
         let new_layout = Layout::array::<TableEntry<K, V>>(new_capacity).unwrap();
 
         assert!(
@@ -214,11 +214,11 @@ impl<K: Hash + PartialEq, V> Table<K, V> {
         );
 
         let new_ptr = if self.capacity == 0 {
-            unsafe { alloc_zeroed(new_layout) }
+            alloc_zeroed(new_layout)
         } else {
             let old_layout = Layout::array::<TableEntry<K, V>>(self.capacity).unwrap();
             let old_ptr = self.entries.as_ptr() as *mut u8;
-            unsafe { realloc(old_ptr, old_layout, new_layout.size()) }
+            realloc(old_ptr, old_layout, new_layout.size())
         };
 
         // Possibly updates pointer locations
@@ -228,13 +228,11 @@ impl<K: Hash + PartialEq, V> Table<K, V> {
         };
 
         // Initialize new memory with zeroes so that empty entries will return valid pointers.
-        unsafe {
-            ptr::write_bytes(
-                self.entries.as_ptr().add(self.capacity /* old capacity */),
-                0,
-                new_capacity - self.capacity,
-            );
-        }
+        ptr::write_bytes(
+            self.entries.as_ptr().add(self.capacity /* old capacity */),
+            0,
+            new_capacity - self.capacity,
+        );
 
         self.capacity = new_capacity;
 
@@ -252,19 +250,17 @@ impl<K: Hash + PartialEq, V> Table<K, V> {
                 TableEntry::Initialized(k, _ignored_v) => {
                     let (new_index, _ignored) = self.find_entry(k, new_capacity);
                     if old_index != new_index {
-                        unsafe {
-                            ptr::copy::<TableEntry<K, V>>(
-                                entry,
-                                self.entries.as_ptr().add(new_index),
-                                1,
-                            );
+                        ptr::copy::<TableEntry<K, V>>(
+                            entry,
+                            self.entries.as_ptr().add(new_index),
+                            1,
+                        );
 
-                            ptr::write_bytes::<TableEntry<K, V>>(
-                                self.entries.as_ptr().add(old_index),
-                                0,
-                                1,
-                            );
-                        }
+                        ptr::write_bytes::<TableEntry<K, V>>(
+                            self.entries.as_ptr().add(old_index),
+                            0,
+                            1,
+                        );
                     }
                 }
             }
