@@ -136,7 +136,7 @@ pub fn print_value(value: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::object::{value_as_rlox_string, ObjString};
+    use crate::object::{value_as_rlox_string_ref, ObjString};
     use crate::table::Table;
 
     #[test]
@@ -147,6 +147,6 @@ mod tests {
         let val1 = Value::from_obj(Obj::String(b));
 
         println!("{}", Value::is_string(&val1));
-        println!("{}", value_as_rlox_string(val1));
+        println!("{}", value_as_rlox_string_ref(val1));
     }
 }

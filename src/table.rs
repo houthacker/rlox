@@ -23,7 +23,7 @@ fn hash_key<K: Hash>(key: &K) -> u64 {
 }
 
 enum TableEntry<K: Hash + PartialEq, V> {
-    Default,
+    Uninitialized,
     Initialized(K, V),
 }
 
@@ -47,7 +47,7 @@ impl<K: Hash + PartialEq + Debug, V: Debug> Debug for Table<K, V> {
                         let entry_repr = format!("{:?}@{} => {:?},\n", k, n, v);
                         repr.push_str(&entry_repr);
                     }
-                    TableEntry::Default => (),
+                    TableEntry::Uninitialized => (),
                 }
             }
         }
@@ -70,7 +70,7 @@ impl<K: Hash + PartialEq + Display, V: Display> Display for Table<K, V> {
                         let entry_repr = format!("{} => {},\n", k, v);
                         repr.push_str(&entry_repr);
                     }
-                    TableEntry::Default => (),
+                    TableEntry::Uninitialized => (),
                 }
             }
         }
@@ -149,7 +149,7 @@ impl<K: Hash + PartialEq, V> Table<K, V> {
 
             // This should have been prevented by a panic during memory allocation in
             // Table::grow(). But since you never know, panic here anyway.
-            TableEntry::Default => panic!("Could not get or insert into Table."),
+            TableEntry::Uninitialized => panic!("Could not get or insert into Table."),
         }
     }
 
@@ -161,7 +161,7 @@ impl<K: Hash + PartialEq, V> Table<K, V> {
             let entry_ref = Self::entry_ptr_to_ref(entry_ptr);
             match entry_ref {
                 TableEntry::Initialized(_ignored, value) => Some(value),
-                TableEntry::Default => None,
+                TableEntry::Uninitialized => None,
             }
         }
     }
@@ -175,11 +175,11 @@ impl<K: Hash + PartialEq, V> Table<K, V> {
                 let entry = ptr::read(entry_ptr);
                 match entry {
                     TableEntry::Initialized(_, _) => {
-                        ptr::write(self.entries.as_ptr().add(idx), TableEntry::Default);
+                        ptr::write(self.entries.as_ptr().add(idx), TableEntry::Uninitialized);
                         self.count -= 1;
                         true
                     }
-                    TableEntry::Default => false,
+                    TableEntry::Uninitialized => false,
                 }
             }
         }
@@ -199,7 +199,7 @@ impl<K: Hash + PartialEq, V> Table<K, V> {
         let (_ignored, entry) = self.find_entry(&key, key_hash, self.capacity);
         let is_new = match entry.as_ref().unwrap() {
             TableEntry::Initialized(_ignored_k, _ignored_v) => false,
-            TableEntry::Default => true,
+            TableEntry::Uninitialized => true,
         };
 
         if is_new {
@@ -224,7 +224,7 @@ impl<K: Hash + PartialEq, V> Table<K, V> {
             let entry_ptr = unsafe { self.entries.as_ptr().add(index as usize) };
             let entry = unsafe { entry_ptr.as_ref().unwrap() };
             match entry {
-                TableEntry::<K, V>::Default => return (index as usize, entry_ptr),
+                TableEntry::<K, V>::Uninitialized => return (index as usize, entry_ptr),
                 TableEntry::<K, V>::Initialized(entry_key, _ignored) => {
                     if entry_key == key {
                         return (index as usize, entry_ptr);
@@ -261,7 +261,7 @@ impl<K: Hash + PartialEq, V> Table<K, V> {
 
         // Initialize new memory with zeroes so that empty entries will return valid pointers.
         for n in self.capacity..new_capacity {
-            ptr::write(self.entries.as_ptr().add(n), TableEntry::Default);
+            ptr::write(self.entries.as_ptr().add(n), TableEntry::Uninitialized);
         }
 
         self.capacity = new_capacity;
@@ -275,7 +275,7 @@ impl<K: Hash + PartialEq, V> Table<K, V> {
                 .as_mut()
                 .unwrap_unchecked();
             match entry {
-                TableEntry::Default => continue,
+                TableEntry::Uninitialized => continue,
                 TableEntry::Initialized(k, _ignored_v) => {
                     let (new_index, _ignored) = self.find_entry(k, hash_key(k), new_capacity);
                     if old_index != new_index {
@@ -285,7 +285,10 @@ impl<K: Hash + PartialEq, V> Table<K, V> {
                             1,
                         );
 
-                        ptr::write(self.entries.as_ptr().add(old_index), TableEntry::Default);
+                        ptr::write(
+                            self.entries.as_ptr().add(old_index),
+                            TableEntry::Uninitialized,
+                        );
                     }
                 }
             }

@@ -1,4 +1,4 @@
-use crate::chunk::LineNumber;
+use crate::chunk::{InstructionIndex, InstructionIndexConverter, LineNumber};
 
 #[cfg(feature = "rlox_debug")]
 use crate::debug::disassemble_chunk;
@@ -61,10 +61,15 @@ impl TryFrom<u8> for Precedence {
     }
 }
 
+enum TokenPosition {
+    Current,
+    Previous,
+}
+
 type ParseFn = fn(compiler: &mut Compiler);
 struct ParseRule(Option<ParseFn>, Option<ParseFn>, Precedence);
 
-//#[cfg_attr(feature = "rlox_debug", derive(Debug))]
+#[cfg_attr(feature = "rlox_debug", derive(Debug))]
 pub struct Compiler<'a> {
     scanner: Scanner,
     chunk: &'a mut Chunk,
@@ -99,6 +104,7 @@ impl<'a> Compiler<'a> {
             TokenType::False        => ParseRule(Some(literal), None,           Precedence::None),
             TokenType::Greater      => ParseRule(None,          Some(binary),   Precedence::Comparison),
             TokenType::GreaterEqual => ParseRule(None,          Some(binary),   Precedence::Comparison),
+            TokenType::Identifier   => ParseRule(Some(variable),None,           Precedence::None),
             TokenType::LeftParen    => ParseRule(Some(grouping),None,           Precedence::None),
             TokenType::Less         => ParseRule(None,          Some(binary),   Precedence::Comparison),
             TokenType::LessEqual    => ParseRule(None,          Some(binary),   Precedence::Comparison),
@@ -116,8 +122,10 @@ impl<'a> Compiler<'a> {
 
     pub fn compile(&mut self) -> bool {
         self.advance();
-        self.expression();
-        self.consume(TokenType::EOF, "Expect end of expression.");
+
+        while !self.match_token_type(TokenType::EOF) {
+            self.declaration();
+        }
 
         self.end_compiler();
         !self.had_error
@@ -187,6 +195,28 @@ impl<'a> Compiler<'a> {
         self.error_at_current(message);
     }
 
+    fn check_token_type(&self, token_type: TokenType) -> bool {
+        unsafe { self.current_token.assume_init_ref() }.kind == token_type
+    }
+
+    fn match_token_type(&mut self, token_type: TokenType) -> bool {
+        if !self.check_token_type(token_type) {
+            false
+        } else {
+            self.advance();
+            true
+        }
+    }
+
+    fn emit_opcode(&mut self, opcode: OpCode) {
+        self.emit_byte(opcode as u8);
+    }
+
+    fn emit_opcodes(&mut self, opcode1: OpCode, opcode2: OpCode) {
+        self.emit_opcode(opcode1);
+        self.emit_opcode(opcode2);
+    }
+
     fn emit_byte(&mut self, byte: u8) {
         let ln = unsafe { self.previous_token.assume_init_ref() }.line;
         self.chunk.write(byte, ln);
@@ -198,11 +228,11 @@ impl<'a> Compiler<'a> {
     }
 
     fn emit_return(&mut self) {
-        self.emit_byte(OpCode::Return as u8);
+        self.emit_opcode(OpCode::Return);
     }
 
-    fn emit_constant(&mut self, value: Value, line: LineNumber) {
-        self.chunk.write_constant(value, line);
+    fn emit_constant(&mut self, value: Value, line: LineNumber) -> InstructionIndex {
+        self.chunk.write_constant(value, line)
     }
 
     fn end_compiler(&mut self) {
@@ -235,8 +265,123 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    fn identifier_constant(&mut self, token_position: TokenPosition) -> InstructionIndex {
+        let token = match token_position {
+            TokenPosition::Current => unsafe { self.previous_token.assume_init_ref() },
+            TokenPosition::Previous => unsafe { self.previous_token.assume_init_ref() },
+        };
+
+        let value = Value::from_obj(Obj::String(ObjString::copy_string(
+            &token.lexeme,
+            &mut self.string_cache,
+        )));
+
+        let line = token.line;
+        self.emit_constant(value, line)
+    }
+
+    fn parse_variable(&mut self, error_message: &str) -> InstructionIndex {
+        self.consume(TokenType::Identifier, error_message);
+
+        self.identifier_constant(TokenPosition::Previous)
+    }
+
+    fn define_global_variable(&mut self, global_index: InstructionIndex) {
+        if global_index <= u8::MAX as InstructionIndex {
+            self.emit_bytes(OpCode::DefineGlobal as u8, global_index as u8);
+        } else {
+            match global_index.to_most_significant_le_bytes() {
+                Ok(bytes) => {
+                    self.emit_opcode(OpCode::DefineLongGlobal);
+                    for byte in bytes {
+                        self.emit_byte(byte);
+                    }
+                }
+                Err(_) => {
+                    // TODO log error message?
+                    self.error("Too many global variables.")
+                }
+            }
+        }
+    }
+
     fn expression(&mut self) {
         self.parse_precedence(Precedence::Assignment);
+    }
+
+    fn var_declaration(&mut self) {
+        let global_index = self.parse_variable("Expect variable name.");
+
+        if self.match_token_type(TokenType::Equal) {
+            self.expression();
+        } else {
+            self.emit_opcode(OpCode::Nil);
+        }
+
+        self.consume(
+            TokenType::Semicolon,
+            "Expect ';' after variable declaration.",
+        );
+
+        self.define_global_variable(global_index);
+    }
+
+    fn expression_statement(&mut self) {
+        self.expression();
+        self.consume(TokenType::Semicolon, "Expect ';' after expression");
+        self.emit_opcode(OpCode::Pop);
+    }
+
+    fn print_statement(&mut self) {
+        self.expression();
+        self.consume(TokenType::Semicolon, "Expect ';' after value.");
+        self.emit_opcode(OpCode::Print);
+    }
+
+    // Continue to retrieve tokens until a statement boundary has been reached.
+    // Then try to continue compilation.
+    fn synchronize(&mut self) {
+        while unsafe { self.current_token.assume_init_ref() }.kind != TokenType::EOF {
+            if unsafe { self.previous_token.assume_init_ref().kind == TokenType::Semicolon } {
+                return;
+            }
+
+            match unsafe { self.current_token.assume_init_ref() }.kind {
+                TokenType::Class
+                | TokenType::Fun
+                | TokenType::Var
+                | TokenType::For
+                | TokenType::If
+                | TokenType::While
+                | TokenType::Print
+                | TokenType::Return => {
+                    return;
+                }
+                _ => (),
+            }
+
+            self.advance();
+        }
+    }
+
+    fn declaration(&mut self) {
+        if self.match_token_type(TokenType::Var) {
+            self.var_declaration();
+        } else {
+            self.statement();
+        }
+
+        if self.panic_mode {
+            self.synchronize();
+        }
+    }
+
+    fn statement(&mut self) {
+        if self.match_token_type(TokenType::Print) {
+            self.print_statement();
+        } else {
+            self.expression_statement();
+        }
     }
 }
 
@@ -245,8 +390,8 @@ fn unary(compiler: &mut Compiler) {
     compiler.parse_precedence(Precedence::Unary);
 
     match token_type {
-        TokenType::Bang => compiler.emit_byte(OpCode::Not as u8),
-        TokenType::Minus => compiler.emit_byte(OpCode::Negate as u8),
+        TokenType::Bang => compiler.emit_opcode(OpCode::Not),
+        TokenType::Minus => compiler.emit_opcode(OpCode::Negate),
         _ => (),
     }
 }
@@ -257,25 +402,25 @@ fn binary(compiler: &mut Compiler) {
     compiler.parse_precedence(rule.2.next());
 
     match operator_type {
-        TokenType::BangEqual => compiler.emit_bytes(OpCode::Equal as u8, OpCode::Not as u8), // todo optimize
-        TokenType::EqualEqual => compiler.emit_byte(OpCode::Equal as u8),
-        TokenType::Greater => compiler.emit_byte(OpCode::Greater as u8),
-        TokenType::GreaterEqual => compiler.emit_bytes(OpCode::Less as u8, OpCode::Not as u8),
-        TokenType::Less => compiler.emit_byte(OpCode::Less as u8),
-        TokenType::LessEqual => compiler.emit_bytes(OpCode::Greater as u8, OpCode::Not as u8),
-        TokenType::Minus => compiler.emit_byte(OpCode::Subtract as u8),
-        TokenType::Plus => compiler.emit_byte(OpCode::Add as u8),
-        TokenType::Slash => compiler.emit_byte(OpCode::Divide as u8),
-        TokenType::Star => compiler.emit_byte(OpCode::Multiply as u8),
+        TokenType::BangEqual => compiler.emit_opcodes(OpCode::Equal, OpCode::Not), // todo optimize
+        TokenType::EqualEqual => compiler.emit_opcode(OpCode::Equal),
+        TokenType::Greater => compiler.emit_opcode(OpCode::Greater),
+        TokenType::GreaterEqual => compiler.emit_opcodes(OpCode::Less, OpCode::Not),
+        TokenType::Less => compiler.emit_opcode(OpCode::Less),
+        TokenType::LessEqual => compiler.emit_opcodes(OpCode::Greater, OpCode::Not),
+        TokenType::Minus => compiler.emit_opcode(OpCode::Subtract),
+        TokenType::Plus => compiler.emit_opcode(OpCode::Add),
+        TokenType::Slash => compiler.emit_opcode(OpCode::Divide),
+        TokenType::Star => compiler.emit_opcode(OpCode::Multiply),
         _ => (),
     }
 }
 
 fn literal(compiler: &mut Compiler) {
     match unsafe { compiler.previous_token.assume_init_ref() }.kind {
-        TokenType::False => compiler.emit_byte(OpCode::False as u8),
-        TokenType::Nil => compiler.emit_byte(OpCode::Nil as u8),
-        TokenType::True => compiler.emit_byte(OpCode::True as u8),
+        TokenType::False => compiler.emit_opcode(OpCode::False),
+        TokenType::Nil => compiler.emit_opcode(OpCode::Nil),
+        TokenType::True => compiler.emit_opcode(OpCode::True),
         _ => (),
     }
 }
@@ -301,6 +446,15 @@ fn string(compiler: &mut Compiler) {
     let rlox_boxed_string = ObjString::copy_string(slice, &mut compiler.string_cache);
     let rlox_value = Value::from_obj(Obj::String(rlox_boxed_string));
     compiler.emit_constant(rlox_value, ln);
+}
+
+fn variable(compiler: &mut Compiler) {
+    let idx = compiler.identifier_constant(TokenPosition::Previous);
+    if idx <= u8::MAX as InstructionIndex {
+        compiler.emit_bytes(OpCode::GetGlobal as u8, idx as u8);
+    } else {
+        compiler.emit_opcode(OpCode::GetLongGlobal);
+    }
 }
 
 #[cfg(test)]

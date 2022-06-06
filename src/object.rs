@@ -46,6 +46,8 @@ pub struct ObjString {
 
 impl Clone for ObjString {
     fn clone(&self) -> Self {
+        println!("Cloning ObjString({})", &self.data);
+
         Self {
             data: self.data.clone(),
             hash: self.hash,
@@ -103,13 +105,27 @@ impl ObjString {
     }
 }
 
-pub fn obj_as_rlox_string<'a>(obj: Obj) -> &'a ObjString {
+pub fn obj_as_rlox_string_ref<'a>(obj: Obj) -> &'a ObjString {
     match obj {
         Obj::String(obj_string) => unsafe { obj_string.as_ref().unwrap() },
     }
 }
 
-pub fn value_as_rlox_string<'a>(value: Value) -> &'a ObjString {
+pub fn obj_as_rlox_string(obj: Obj) -> ObjString {
+    match obj {
+        Obj::String(obj_string_ptr) => unsafe { obj_string_ptr.read() },
+    }
+}
+
+pub fn value_as_rlox_string_ref<'a>(value: Value) -> &'a ObjString {
+    if let Value::Obj(obj) = value {
+        return obj_as_rlox_string_ref(obj);
+    }
+
+    panic!("Given Value is not an Obj")
+}
+
+pub fn value_as_rlox_string(value: Value) -> ObjString {
     if let Value::Obj(obj) = value {
         return obj_as_rlox_string(obj);
     }
