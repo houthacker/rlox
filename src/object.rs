@@ -1,16 +1,17 @@
+use crate::table::Table;
 use crate::value::Value;
+use std::collections::hash_map::DefaultHasher;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
-use std::ops;
 
 pub enum Obj {
-    String(ObjString),
+    String(*const ObjString),
 }
 
 impl Clone for Obj {
     fn clone(&self) -> Self {
         match self {
-            Obj::String(obj_string) => Obj::String(obj_string.clone()),
+            Obj::String(obj_string) => Obj::String(*obj_string),
         }
     }
 }
@@ -32,32 +33,23 @@ impl PartialEq for Obj {
 impl Display for Obj {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         match self {
-            Obj::String(obj_string) => write!(f, "{}", obj_string),
+            Obj::String(obj_string) => write!(f, "{}", unsafe { obj_string.as_ref().unwrap() }),
         }
     }
 }
 
+#[cfg_attr(feature = "rlox_debug", derive(Debug))]
 pub struct ObjString {
-    data: String,
+    pub data: String,
+    pub hash: u64,
 }
 
 impl Clone for ObjString {
     fn clone(&self) -> Self {
         Self {
             data: self.data.clone(),
+            hash: self.hash,
         }
-    }
-}
-
-impl ops::Add for ObjString {
-    type Output = ObjString;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        let mut concatenated = String::with_capacity(self.data.len() + rhs.data.len());
-        concatenated.push_str(&self.data);
-        concatenated.push_str(&rhs.data);
-
-        ObjString::take_string(concatenated)
     }
 }
 
@@ -71,7 +63,7 @@ impl Eq for ObjString {}
 
 impl Display for ObjString {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.data())
+        write!(f, "{}", self.data)
     }
 }
 
@@ -82,44 +74,44 @@ impl Hash for ObjString {
 }
 
 impl ObjString {
-    pub fn copy_string(value: &str) -> Self {
-        Self {
-            data: String::from(value),
-        }
+    pub fn new_interned(value: String, cache: &mut Table<Self, Value>) -> &ObjString {
+        let mut hasher = DefaultHasher::new();
+        value.hash(&mut hasher);
+
+        let instance = Self {
+            data: value.clone(),
+            hash: hasher.finish(),
+        };
+
+        cache.get_or_insert(instance, Value::Nil())
     }
 
-    pub fn take_string(value: String) -> Self {
-        Self { data: value }
+    pub fn add<'a>(lhs: &Self, rhs: &Self, cache: &'a mut Table<Self, Value>) -> &'a Self {
+        let mut concatenated = String::with_capacity(lhs.data.len() + rhs.data.len());
+        concatenated.push_str(&lhs.data);
+        concatenated.push_str(&rhs.data);
+
+        Self::take_string(concatenated, cache)
     }
 
-    pub fn data(&self) -> &str {
-        &self.data
+    pub fn copy_string<'a>(value: &str, cache: &'a mut Table<Self, Value>) -> &'a Self {
+        Self::new_interned(String::from(value), cache)
+    }
+
+    pub fn take_string(value: String, cache: &mut Table<Self, Value>) -> &Self {
+        Self::new_interned(value, cache)
     }
 }
 
-pub fn obj_as_rlox_string(obj: Obj) -> ObjString {
+pub fn obj_as_rlox_string<'a>(obj: Obj) -> &'a ObjString {
     match obj {
-        Obj::String(obj_string) => obj_string,
+        Obj::String(obj_string) => unsafe { obj_string.as_ref().unwrap() },
     }
 }
 
-pub fn obj_as_rlox_string_ref(obj: &Obj) -> &ObjString {
-    match obj {
-        Obj::String(obj_string) => obj_string,
-    }
-}
-
-pub fn value_as_rlox_string(value: Value) -> ObjString {
+pub fn value_as_rlox_string<'a>(value: Value) -> &'a ObjString {
     if let Value::Obj(obj) = value {
         return obj_as_rlox_string(obj);
-    }
-
-    panic!("Given Value is not an Obj")
-}
-
-pub fn value_as_rlox_string_ref(value: &Value) -> &ObjString {
-    if let Value::Obj(obj) = value {
-        return obj_as_rlox_string_ref(obj);
     }
 
     panic!("Given Value is not an Obj")

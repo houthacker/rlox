@@ -8,6 +8,12 @@ pub enum Value {
     Obj(Obj),
 }
 
+impl Default for Value {
+    fn default() -> Self {
+        Value::Nil()
+    }
+}
+
 impl Clone for Value {
     fn clone(&self) -> Self {
         match self {
@@ -130,15 +136,17 @@ pub fn print_value(value: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::object::{value_as_rlox_string_ref, ObjString};
+    use crate::object::{value_as_rlox_string, ObjString};
+    use crate::table::Table;
 
     #[test]
     fn test_string_conversion() {
+        let mut cache = Table::new();
         let s = String::from("test");
-        let b = ObjString::take_string(s);
+        let b = ObjString::take_string(s, &mut cache);
         let val1 = Value::from_obj(Obj::String(b));
 
         println!("{}", Value::is_string(&val1));
-        println!("{}", value_as_rlox_string_ref(&val1));
+        println!("{}", value_as_rlox_string(val1));
     }
 }

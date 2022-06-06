@@ -1,9 +1,13 @@
-use crate::debug::{disassemble_chunk, disassemble_instruction};
-use crate::object::{value_as_rlox_string, Obj};
+#[cfg(feature = "rlox_debug")]
+use crate::debug::disassemble_instruction;
+
+use crate::object::{value_as_rlox_string, Obj, ObjString};
 use crate::value::{as_bool, as_number, print_value, Value};
 use crate::{Chunk, Compiler, OpCode};
 
+use crate::scanner::Scanner;
 use crate::stack::Stack;
+use crate::table::Table;
 use std::ptr;
 
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
@@ -17,33 +21,33 @@ pub enum InterpretResult {
 pub struct VM {
     ip: *mut u8,
     stack: Stack<Value, 256>,
-    compiler: Compiler,
+    strings: Table<ObjString, Value>,
 }
 
 impl VM {
-    pub fn new() -> Self {
+    pub fn new(string_cache: Table<ObjString, Value>) -> Self {
         Self {
             ip: ptr::null_mut(),
             stack: Stack::new(),
-            compiler: Compiler::new(),
+            strings: string_cache,
         }
     }
 
-    pub fn interpret(&mut self, source: String) -> InterpretResult {
+    pub fn interpret(source: String) -> InterpretResult {
         let mut chunk = Chunk::new();
+        let mut compiler = Compiler::new(Scanner::new(source), &mut chunk);
 
-        if !self.compiler.compile(source, &mut chunk) {
-            return InterpretResult::CompileError;
+        if !compiler.compile() {
+            InterpretResult::CompileError
+        } else {
+            let mut vm = VM::new(Table::from(compiler.string_cache()));
+            unsafe { vm.run(&mut chunk) }
         }
+    }
 
-        disassemble_chunk(&chunk, "Chunk");
-
+    pub unsafe fn run(&mut self, chunk: &mut Chunk) -> InterpretResult {
         self.ip = chunk.code.as_mut_ptr();
 
-        unsafe { self.run(&chunk) }
-    }
-
-    unsafe fn run(&mut self, chunk: &Chunk) -> InterpretResult {
         loop {
             if cfg!(feature = "rlox_debug") {
                 // Stack tracking
@@ -202,7 +206,11 @@ impl VM {
         let rhs = self.stack.pop();
         let lhs = self.stack.pop();
         if let (Some(y), Some(x)) = (rhs, lhs) {
-            let concatenated = value_as_rlox_string(x) + value_as_rlox_string(y);
+            let concatenated = ObjString::add(
+                value_as_rlox_string(x),
+                value_as_rlox_string(y),
+                &mut self.strings,
+            );
             self.stack.push(Value::from_obj(Obj::String(concatenated)))
         }
     }
@@ -324,34 +332,51 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore] // return statements do not yet work
     fn interpret_test_chunk() {
-        let mut vm = VM::new();
         let source = String::from("return -((1.2 + 3.4) / 5.6)");
+        let mut chunk = Chunk::new();
 
-        vm.interpret(source);
+        let mut compiler = Compiler::new(Scanner::new(source), &mut chunk);
+        assert!(compiler.compile());
+
+        let mut vm = VM::new(Table::from(compiler.string_cache()));
+        unsafe { vm.run(&mut chunk) };
     }
 
     #[test]
     fn interpret_numeric_expr() {
-        let mut vm = VM::new();
         let source = String::from("!(5 - 4 > 3 * 2 == !nil)");
+        let mut chunk = Chunk::new();
 
-        vm.interpret(source);
+        let mut compiler = Compiler::new(Scanner::new(source), &mut chunk);
+        assert!(compiler.compile());
+
+        let mut vm = VM::new(Table::from(compiler.string_cache()));
+        unsafe { vm.run(&mut chunk) };
     }
 
     #[test]
     fn interpret_string_concatenation() {
-        let mut vm = VM::new();
         let source = String::from("\"st\" + \"ri\" + \"ng\"");
+        let mut chunk = Chunk::new();
 
-        vm.interpret(source);
+        let mut compiler = Compiler::new(Scanner::new(source), &mut chunk);
+        assert!(compiler.compile());
+
+        let mut vm = VM::new(Table::from(compiler.string_cache()));
+        unsafe { vm.run(&mut chunk) };
     }
 
     #[test]
     fn interpret_string() {
-        let mut vm = VM::new();
         let source = String::from("\"abc\" == \"abc\"");
+        let mut chunk = Chunk::new();
 
-        vm.interpret(source);
+        let mut compiler = Compiler::new(Scanner::new(source), &mut chunk);
+        assert!(compiler.compile());
+
+        let mut vm = VM::new(Table::from(compiler.string_cache()));
+        unsafe { vm.run(&mut chunk) };
     }
 }
