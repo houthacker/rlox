@@ -8,12 +8,18 @@ use std::ptr::NonNull;
 
 const MAX_TABLE_LOAD: f64 = 0.75;
 
-fn grow_capacity(capacity: usize) -> usize {
+fn next_capacity(capacity: usize) -> usize {
     if capacity < 8 {
         8
     } else {
         capacity * 2
     }
+}
+
+fn hash_key<K: Hash>(key: &K) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    key.hash(&mut hasher);
+    hasher.finish()
 }
 
 enum TableEntry<K: Hash + PartialEq, V> {
@@ -91,6 +97,13 @@ impl<K: Hash + PartialEq + Clone, V: Clone> Table<K, V> {
             }
         }
     }
+
+    pub fn from(src: &Table<K, V>) -> Table<K, V> {
+        let mut table = Table::new();
+        Self::add_all(src, &mut table);
+
+        table
+    }
 }
 
 impl<K: Hash + PartialEq, V> Drop for Table<K, V> {
@@ -122,40 +135,29 @@ impl<K: Hash + PartialEq, V> Table<K, V> {
         self.count
     }
 
-    pub fn insert(&mut self, mut key: K, value: V) -> bool {
-        if self.is_at_capacity() {
-            let new_capacity = grow_capacity(self.capacity);
-            unsafe { self.grow(new_capacity) };
-        }
-
-        let (_ignored, entry) = self.find_entry(&mut key, self.capacity);
-        let is_new = unsafe {
-            match entry.as_ref().unwrap() {
-                TableEntry::Initialized(_ignored_k, _ignored_v) => false,
-                TableEntry::Default => true,
-            }
-        };
-
-        unsafe {
-            if is_new {
-                ptr::write(entry, TableEntry::Initialized(key, value));
-            } else {
-                let _ = ptr::replace(entry, TableEntry::Initialized(key, value));
-            }
-        }
-
-        if is_new {
-            self.count += 1;
-        }
-
+    pub fn insert(&mut self, key: K, value: V) -> bool {
+        let hash = hash_key(&key);
+        let (is_new, _ignored) = unsafe { self.insert_internal(key, hash, value) };
         is_new
     }
 
-    pub fn get(&mut self, key: &mut K) -> Option<&V> {
+    pub fn get_or_insert(&mut self, key: K, value: V) -> &K {
+        let hash = hash_key(&key);
+        let (_ignored, entry) = unsafe { self.insert_internal(key, hash, value) };
+        match entry {
+            TableEntry::Initialized(k, _v) => k,
+
+            // This should have been prevented by a panic during memory allocation in
+            // Table::grow(). But since you never know, panic here anyway.
+            TableEntry::Default => panic!("Could not get or insert into Table."),
+        }
+    }
+
+    pub fn get(&mut self, key: &K) -> Option<&V> {
         if self.count == 0 {
             None
         } else {
-            let (_, entry_ptr) = self.find_entry(key, self.capacity);
+            let (_, entry_ptr) = self.find_entry(key, hash_key(key), self.capacity);
             let entry_ref = Self::entry_ptr_to_ref(entry_ptr);
             match entry_ref {
                 TableEntry::Initialized(_ignored, value) => Some(value),
@@ -164,11 +166,11 @@ impl<K: Hash + PartialEq, V> Table<K, V> {
         }
     }
 
-    pub fn delete(&mut self, key: &mut K) -> bool {
+    pub fn delete(&mut self, key: &K) -> bool {
         if self.count == 0 {
             false
         } else {
-            let (idx, entry_ptr) = self.find_entry(key, self.capacity);
+            let (idx, entry_ptr) = self.find_entry(key, hash_key(key), self.capacity);
             unsafe {
                 let entry = ptr::read(entry_ptr);
                 match entry {
@@ -183,21 +185,51 @@ impl<K: Hash + PartialEq, V> Table<K, V> {
         }
     }
 
-    fn find_entry(&mut self, key: &mut K, capacity: usize) -> (usize, *mut TableEntry<K, V>) {
-        let mut hasher = DefaultHasher::new();
-        key.hash(&mut hasher);
-        let mut index = hasher.finish() % capacity as u64;
+    unsafe fn insert_internal(
+        &mut self,
+        key: K,
+        key_hash: u64,
+        value: V,
+    ) -> (bool, &TableEntry<K, V>) {
+        if self.is_at_capacity() {
+            let new_capacity = next_capacity(self.capacity);
+            self.grow(new_capacity);
+        }
+
+        let (_ignored, entry) = self.find_entry(&key, key_hash, self.capacity);
+        let is_new = match entry.as_ref().unwrap() {
+            TableEntry::Initialized(_ignored_k, _ignored_v) => false,
+            TableEntry::Default => true,
+        };
+
+        if is_new {
+            ptr::write(entry, TableEntry::Initialized(key, value));
+            self.count += 1;
+        } else {
+            let _ = ptr::replace(entry, TableEntry::Initialized(key, value));
+        }
+
+        (is_new, &*entry)
+    }
+
+    fn find_entry(
+        &mut self,
+        key: &K,
+        key_hash: u64,
+        capacity: usize,
+    ) -> (usize, *mut TableEntry<K, V>) {
+        let mut index = key_hash % capacity as u64;
 
         loop {
             let entry_ptr = unsafe { self.entries.as_ptr().add(index as usize) };
             let entry = unsafe { entry_ptr.as_ref().unwrap() };
             match entry {
-                TableEntry::Initialized(entry_key, _ignored) => {
+                TableEntry::<K, V>::Default => return (index as usize, entry_ptr),
+                TableEntry::<K, V>::Initialized(entry_key, _ignored) => {
                     if entry_key == key {
                         return (index as usize, entry_ptr);
                     }
                 }
-                TableEntry::Default => return (index as usize, entry_ptr),
             }
 
             index = (index + 1) % capacity as u64;
@@ -228,27 +260,24 @@ impl<K: Hash + PartialEq, V> Table<K, V> {
         };
 
         // Initialize new memory with zeroes so that empty entries will return valid pointers.
-        ptr::write_bytes(
-            self.entries.as_ptr().add(self.capacity /* old capacity */),
-            0,
-            new_capacity - self.capacity,
-        );
+        for n in self.capacity..new_capacity {
+            ptr::write(self.entries.as_ptr().add(n), TableEntry::Default);
+        }
 
         self.capacity = new_capacity;
 
         // Relocate entries due to new table size
         for old_index in 0..self.capacity {
-            let entry = unsafe {
-                self.entries
-                    .as_ptr()
-                    .add(old_index)
-                    .as_mut()
-                    .unwrap_unchecked()
-            };
+            let entry = self
+                .entries
+                .as_ptr()
+                .add(old_index)
+                .as_mut()
+                .unwrap_unchecked();
             match entry {
                 TableEntry::Default => continue,
                 TableEntry::Initialized(k, _ignored_v) => {
-                    let (new_index, _ignored) = self.find_entry(k, new_capacity);
+                    let (new_index, _ignored) = self.find_entry(k, hash_key(k), new_capacity);
                     if old_index != new_index {
                         ptr::copy::<TableEntry<K, V>>(
                             entry,
@@ -256,11 +285,7 @@ impl<K: Hash + PartialEq, V> Table<K, V> {
                             1,
                         );
 
-                        ptr::write_bytes::<TableEntry<K, V>>(
-                            self.entries.as_ptr().add(old_index),
-                            0,
-                            1,
-                        );
+                        ptr::write(self.entries.as_ptr().add(old_index), TableEntry::Default);
                     }
                 }
             }
@@ -303,14 +328,14 @@ mod tests {
         ));
         assert_eq!(table.size(), 1);
 
-        match table.get(&mut 0) {
+        match table.get(&0) {
             Some(elem) => {
                 assert_eq!(elem.value, String::from("foobar"))
             }
             None => panic!("Expect element to be found"),
         }
 
-        assert!(table.delete(&mut 0));
+        assert!(table.delete(&0));
         assert_eq!(table.size(), 0);
     }
 
@@ -320,7 +345,7 @@ mod tests {
         assert!(table.insert(String::from("foobar"), 1.337));
         assert_eq!(table.size(), 1);
 
-        assert!(table.delete(&mut String::from("foobar")));
+        assert!(table.delete(&String::from("foobar")));
         assert_eq!(table.size(), 0);
     }
 
@@ -329,14 +354,14 @@ mod tests {
         let mut table = Table::<String, f64>::new();
 
         // Insert items to one above the growth threshold to force a Table::grow()
-        let required_capacity = grow_capacity(0);
+        let required_capacity = next_capacity(0);
         for n in 0..required_capacity {
             let s = n.to_string();
             table.insert(s, 1.337);
         }
 
         assert_eq!(table.size(), required_capacity);
-        assert_eq!(table.capacity, grow_capacity(required_capacity));
+        assert_eq!(table.capacity, next_capacity(required_capacity));
     }
 
     #[test]
@@ -344,7 +369,7 @@ mod tests {
         let mut table = Table::<String, f64>::new();
 
         // Insert items to one above the growth threshold to force a Table::grow()
-        let required_capacity = grow_capacity(0);
+        let required_capacity = next_capacity(0);
         for n in 0..required_capacity {
             let s = n.to_string();
             table.insert(s, 1.337);
@@ -355,9 +380,9 @@ mod tests {
 
         assert_eq!(other_table.size(), table.size());
         for n in 0..required_capacity {
-            let mut key = n.to_string();
-            let lhs = table.get(&mut key);
-            let rhs = other_table.get(&mut key);
+            let key = n.to_string();
+            let lhs = table.get(&key);
+            let rhs = other_table.get(&key);
 
             assert_eq!(lhs, rhs);
         }

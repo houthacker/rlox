@@ -131,7 +131,7 @@ impl Chunk {
     /// * If the given InstructionIndex doesn't exist in this chunk.
     /// # Arguments
     /// * `idx` - The index of the instruction within this chunk
-    pub fn get_line(&self, idx: InstructionIndex) -> &Line {
+    pub fn get_line(&self, idx: InstructionIndex) -> Line {
         self.try_get_line(idx).unwrap()
     }
 
@@ -143,12 +143,12 @@ impl Chunk {
         self.constants.len() - 1
     }
 
-    fn try_get_line(&self, idx: InstructionIndex) -> Option<&Line> {
+    fn try_get_line(&self, idx: InstructionIndex) -> Option<Line> {
         let mut count = idx + 1; // InstructionIndex is 0-based
 
-        for line in &self.lines {
+        for line in self.lines.iter() {
             if count <= line.references {
-                return Some(line);
+                return Some(line.clone());
             }
 
             count -= line.references
