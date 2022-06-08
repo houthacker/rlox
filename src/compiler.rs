@@ -5,7 +5,6 @@ use crate::debug::disassemble_chunk;
 
 use crate::object::{Obj, ObjString};
 use crate::scanner::{Scanner, Token, TokenType};
-use crate::table::Table;
 use crate::value::Value;
 use crate::{Chunk, OpCode};
 use std::mem::MaybeUninit;
@@ -77,7 +76,6 @@ pub struct Compiler<'a> {
     previous_token: MaybeUninit<Token>,
     had_error: bool,
     panic_mode: bool,
-    string_cache: Table<ObjString, Value>,
 }
 
 impl<'a> Compiler<'a> {
@@ -89,7 +87,6 @@ impl<'a> Compiler<'a> {
             previous_token: MaybeUninit::uninit(),
             had_error: false,
             panic_mode: false,
-            string_cache: Table::new(),
         }
     }
 
@@ -129,10 +126,6 @@ impl<'a> Compiler<'a> {
 
         self.end_compiler();
         !self.had_error
-    }
-
-    pub fn string_cache(&self) -> &Table<ObjString, Value> {
-        &self.string_cache
     }
 
     // Notifies the user of an error at the current token.
@@ -271,10 +264,7 @@ impl<'a> Compiler<'a> {
             TokenPosition::Previous => unsafe { self.previous_token.assume_init_ref() },
         };
 
-        let value = Value::from_obj(Obj::String(ObjString::copy_string(
-            &token.lexeme,
-            &mut self.string_cache,
-        )));
+        let value = Value::from_obj(Obj::String(ObjString::copy_string(&token.lexeme)));
 
         let line = token.line;
         self.emit_constant(value, line)
@@ -443,8 +433,8 @@ fn string(compiler: &mut Compiler) {
     let ln = prev.line;
 
     let slice = &prev.lexeme[1..prev.lexeme.len() - 1];
-    let rlox_boxed_string = ObjString::copy_string(slice, &mut compiler.string_cache);
-    let rlox_value = Value::from_obj(Obj::String(rlox_boxed_string));
+    let rlox_string = ObjString::copy_string(slice);
+    let rlox_value = Value::from_obj(Obj::String(rlox_string));
     compiler.emit_constant(rlox_value, ln);
 }
 
@@ -470,8 +460,8 @@ mod tests {
         assert!(compiler.compile());
 
         assert_eq!(
-            chunk.constants,
-            vec![
+            &chunk.constants,
+            &vec![
                 Value::from_number(5f64),
                 Value::from_number(4f64),
                 Value::from_number(3f64),

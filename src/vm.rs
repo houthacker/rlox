@@ -1,13 +1,13 @@
 #[cfg(feature = "rlox_debug")]
 use crate::debug::disassemble_instruction;
 
-use crate::object::{value_as_rlox_string, value_as_rlox_string_ref, Obj, ObjString};
+use crate::object::{value_as_rlox_string, Obj, ObjString};
 use crate::value::{as_bool, as_number, print_value, Value};
 use crate::{Chunk, Compiler, OpCode};
 
 use crate::chunk::{InstructionIndex, InstructionIndexConverter};
 use crate::scanner::Scanner;
-use crate::stack::Stack;
+use crate::stack::UnsafeStack;
 use crate::table::Table;
 use std::ptr;
 
@@ -22,17 +22,15 @@ pub enum InterpretResult {
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
 pub struct VM {
     ip: *mut u8,
-    stack: Stack<Value, 256>,
-    string_cache: Table<ObjString, Value>,
+    stack: UnsafeStack<Value, 256>,
     globals: Table<ObjString, Value>,
 }
 
 impl VM {
-    pub fn new(string_cache: Table<ObjString, Value>) -> Self {
+    pub fn new() -> Self {
         Self {
             ip: ptr::null_mut(),
-            stack: Stack::new(),
-            string_cache,
+            stack: UnsafeStack::new(),
             globals: Table::new(),
         }
     }
@@ -44,7 +42,7 @@ impl VM {
         if !compiler.compile() {
             InterpretResult::CompileError
         } else {
-            let mut vm = VM::new(Table::from(compiler.string_cache()));
+            let mut vm = VM::new();
             unsafe { vm.run(&mut chunk) }
         }
     }
@@ -255,19 +253,21 @@ impl VM {
         let rhs = self.stack.pop();
         let lhs = self.stack.pop();
         if let (Some(y), Some(x)) = (rhs, lhs) {
-            let concatenated = ObjString::add(
-                value_as_rlox_string_ref(x),
-                value_as_rlox_string_ref(y),
-                &mut self.string_cache,
-            );
+            let concatenated = ObjString::add(&value_as_rlox_string(x), &value_as_rlox_string(y));
             self.stack.push(Value::from_obj(Obj::String(concatenated)))
         }
     }
 
     fn type_check_two_operands(&mut self, validator: fn(&Value) -> bool) -> bool {
+        if cfg!(feature = "rlox_debug") {
+            println!("\nStack: {:?}", self.stack);
+        }
         match self.stack.peek(0) {
             Some(rhs) => match self.stack.peek(1) {
-                Some(lhs) => validator(lhs) && validator(rhs),
+                Some(lhs) => {
+                    // comment
+                    validator(lhs) && validator(rhs)
+                }
                 None => false,
             },
             None => false,
@@ -422,7 +422,7 @@ mod tests {
 
     #[test]
     fn interpret_string() {
-        let source = String::from("\"abc\" == \"abc\"");
+        let source = String::from("var x = \"abc\" + \"def\"; print x;");
         assert_eq!(VM::interpret(source), InterpretResult::Ok);
     }
 

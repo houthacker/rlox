@@ -36,8 +36,7 @@ pub struct Table<K: Hash + PartialEq, V> {
 
 impl<K: Hash + PartialEq + Debug, V: Debug> Debug for Table<K, V> {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        let mut repr = String::new();
-        repr.push_str("Table {\n");
+        let mut repr = String::from("Table {\n");
 
         for n in 0..self.capacity {
             unsafe {
@@ -90,9 +89,12 @@ impl<K: Hash + PartialEq + Clone, V: Clone> Table<K, V> {
     pub fn add_all(src: &Table<K, V>, dst: &mut Table<K, V>) {
         for n in 0..src.capacity {
             unsafe {
-                let elem = Table::<K, V>::entry_ptr_to_ref(src.entries.as_ptr().add(n));
-                if let TableEntry::Initialized(k, v) = elem {
-                    dst.insert(k.clone(), v.clone());
+                let elem = &*src.entries.as_ptr().add(n);
+                match elem {
+                    TableEntry::Initialized(k, v) => {
+                        dst.insert(k.clone(), v.clone());
+                    }
+                    TableEntry::Uninitialized => (),
                 }
             }
         }
@@ -196,18 +198,19 @@ impl<K: Hash + PartialEq, V> Table<K, V> {
             self.grow(new_capacity);
         }
 
-        let (_ignored, entry) = self.find_entry(&key, key_hash, self.capacity);
+        let (_idx, entry) = self.find_entry(&key, key_hash, self.capacity);
         let is_new = match entry.as_ref().unwrap() {
             TableEntry::Initialized(_ignored_k, _ignored_v) => false,
             TableEntry::Uninitialized => true,
         };
 
         if is_new {
-            ptr::write(entry, TableEntry::Initialized(key, value));
             self.count += 1;
         } else {
-            let _ = ptr::replace(entry, TableEntry::Initialized(key, value));
+            ptr::drop_in_place(entry);
         }
+
+        ptr::write(entry, TableEntry::Initialized(key, value));
 
         (is_new, &*entry)
     }
