@@ -47,7 +47,7 @@ impl<T, const SIZE: usize> UnsafeStack<T, SIZE> {
     }
 
     pub fn peek(&self, distance: usize) -> Option<&T> {
-        if self.top_offset <= 1 {
+        if self.top_offset == 0 {
             None
         } else {
             unsafe {

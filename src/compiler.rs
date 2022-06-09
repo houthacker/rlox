@@ -1,4 +1,4 @@
-use crate::chunk::{InstructionIndex, InstructionIndexConverter, LineNumber};
+use crate::chunk::{InstructionIndex, InstructionIndexConverter};
 
 #[cfg(feature = "rlox_debug")]
 use crate::debug::disassemble_chunk;
@@ -224,10 +224,6 @@ impl<'a> Compiler<'a> {
         self.emit_opcode(OpCode::Return);
     }
 
-    fn emit_constant(&mut self, value: Value, line: LineNumber) -> InstructionIndex {
-        self.chunk.write_constant(value, line)
-    }
-
     fn end_compiler(&mut self) {
         self.emit_return();
 
@@ -260,14 +256,16 @@ impl<'a> Compiler<'a> {
 
     fn identifier_constant(&mut self, token_position: TokenPosition) -> InstructionIndex {
         let token = match token_position {
-            TokenPosition::Current => unsafe { self.previous_token.assume_init_ref() },
+            TokenPosition::Current => unsafe { self.current_token.assume_init_ref() },
             TokenPosition::Previous => unsafe { self.previous_token.assume_init_ref() },
         };
 
         let value = Value::from_obj(Obj::String(ObjString::copy_string(&token.lexeme)));
 
-        let line = token.line;
-        self.emit_constant(value, line)
+        // Just add the constant and do not emit OpCode::Constant, since
+        // identifier_constant must cause the VM to add the constant value to the stack,
+        // not its' related variable name.
+        self.chunk.add_constant(value)
     }
 
     fn parse_variable(&mut self, error_message: &str) -> InstructionIndex {
@@ -392,7 +390,7 @@ fn binary(compiler: &mut Compiler) {
     compiler.parse_precedence(rule.2.next());
 
     match operator_type {
-        TokenType::BangEqual => compiler.emit_opcodes(OpCode::Equal, OpCode::Not), // todo optimize
+        TokenType::BangEqual => compiler.emit_opcodes(OpCode::Equal, OpCode::Not), // todo optimize?
         TokenType::EqualEqual => compiler.emit_opcode(OpCode::Equal),
         TokenType::Greater => compiler.emit_opcode(OpCode::Greater),
         TokenType::GreaterEqual => compiler.emit_opcodes(OpCode::Less, OpCode::Not),
@@ -425,7 +423,9 @@ fn number(compiler: &mut Compiler) {
     let ln = prev.line;
     let number = prev.lexeme.parse::<f64>().unwrap();
 
-    compiler.emit_constant(Value::from_number(number), ln);
+    compiler
+        .chunk
+        .write_constant(Value::from_number(number), ln);
 }
 
 fn string(compiler: &mut Compiler) {
@@ -435,21 +435,72 @@ fn string(compiler: &mut Compiler) {
     let slice = &prev.lexeme[1..prev.lexeme.len() - 1];
     let rlox_string = ObjString::copy_string(slice);
     let rlox_value = Value::from_obj(Obj::String(rlox_string));
-    compiler.emit_constant(rlox_value, ln);
+    compiler.chunk.write_constant(rlox_value, ln);
 }
 
 fn variable(compiler: &mut Compiler) {
+    named_variable(compiler);
+}
+
+fn named_variable(compiler: &mut Compiler) {
     let idx = compiler.identifier_constant(TokenPosition::Previous);
     if idx <= u8::MAX as InstructionIndex {
         compiler.emit_bytes(OpCode::GetGlobal as u8, idx as u8);
     } else {
         compiler.emit_opcode(OpCode::GetLongGlobal);
+
+        match idx.to_most_significant_le_bytes() {
+            Ok(bytes) => bytes.iter().for_each(|b| compiler.emit_byte(*b)),
+            Err(msg) => compiler.error(msg),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compile_with_global_variables() {
+        let source = String::from("var beverage = \"cafe au lait\";\nvar breakfast = \"beignets with \" + beverage;\nprint breakfast;");
+        let mut chunk = Chunk::new();
+        let mut compiler = Compiler::new(Scanner::new(source), &mut chunk);
+
+        assert!(compiler.compile());
+
+        assert_eq!(
+            chunk.constants,
+            vec![
+                Value::from_obj(Obj::String(ObjString::new(String::from("beverage")))),
+                Value::from_obj(Obj::String(ObjString::new(String::from("cafe au lait")))),
+                Value::from_obj(Obj::String(ObjString::new(String::from("breakfast")))),
+                Value::from_obj(Obj::String(ObjString::new(String::from("beignets with ")))),
+                Value::from_obj(Obj::String(ObjString::new(String::from("beverage")))),
+                Value::from_obj(Obj::String(ObjString::new(String::from("breakfast")))),
+            ]
+        );
+
+        assert_eq!(
+            chunk.code,
+            vec![
+                OpCode::Constant as u8,
+                1u8, // stack.push('cafe au lait')
+                OpCode::DefineGlobal as u8,
+                0u8, // constants[0] = 'beverage', globals['beverage'] = 'cafe au lait'
+                OpCode::Constant as u8,
+                3u8, // constants[3] = 'beignets with '
+                OpCode::GetGlobal as u8,
+                4u8,               // stack.push(globals['beverage'])
+                OpCode::Add as u8, // stack.push(stack.pop() + stack.pop())
+                OpCode::DefineGlobal as u8,
+                2u8, // constants[2] = 'breakfast', globals['breakfast'] = 'beignets with cafe au lait'
+                OpCode::GetGlobal as u8,
+                5u8,                 // stack.push(globals['breakfast'])
+                OpCode::Print as u8, // print stack.pop() -> 'beignets with cafe au lait'
+                OpCode::Return as u8,
+            ]
+        );
+    }
 
     #[test]
     fn compile_numeric_binary_unary() {
@@ -460,8 +511,8 @@ mod tests {
         assert!(compiler.compile());
 
         assert_eq!(
-            &chunk.constants,
-            &vec![
+            chunk.constants,
+            vec![
                 Value::from_number(5f64),
                 Value::from_number(4f64),
                 Value::from_number(3f64),

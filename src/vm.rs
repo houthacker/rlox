@@ -52,20 +52,6 @@ impl VM {
 
         loop {
             if cfg!(feature = "rlox_debug") {
-                // Stack tracking
-                print!("          ");
-                for sp in 0..self.stack.len() {
-                    print!("[ ");
-                    match self.stack.peek(sp) {
-                        Some(elem) => {
-                            print_value(elem);
-                        }
-                        None => (),
-                    }
-                    print!(" ]");
-                }
-                println!();
-
                 // Disassemble current instruction
                 let offset = VM::get_offset(chunk, self.ip);
                 disassemble_instruction(chunk, offset);
@@ -112,7 +98,7 @@ impl VM {
                     self.globals.insert(var_name, value);
 
                     if cfg!(feature = "rlox_debug") {
-                        println!("{:?}", &self.globals);
+                        println!("Globals: {:?}", &self.globals);
                     }
                 }
                 OpCode::DefineLongGlobal => {
@@ -123,7 +109,8 @@ impl VM {
                     // This is to support a triggered garbage collection while interning the string.
                     // In rlox we hope to prevent the need for a GC due to rusts'
                     // memory model characteristics.
-                    self.globals.insert(var_name, self.stack.pop().unwrap());
+                    let value = self.stack.pop().unwrap();
+                    self.globals.insert(var_name, value);
                 }
                 OpCode::Divide => {
                     if self.validate_two_operands(
@@ -202,10 +189,9 @@ impl VM {
                     Some(elem) => self.stack.push(Value::from_bool(Self::is_falsey(&elem))),
                     None => (),
                 },
-                OpCode::Pop => match self.stack.pop() {
-                    Some(_) => (),
-                    None => (),
-                },
+                OpCode::Pop => {
+                    self.stack.pop().unwrap();
+                }
                 OpCode::Print => match self.stack.pop() {
                     Some(elem) => {
                         print_value(&elem);
@@ -225,6 +211,11 @@ impl VM {
                 }
                 OpCode::True => self.stack.push(Value::from_bool(true)),
             };
+
+            if cfg!(feature = "rlox_debug") {
+                // Stack tracking
+                println!("Stack: {:?}", self.stack)
+            }
         }
     }
 
@@ -259,9 +250,6 @@ impl VM {
     }
 
     fn type_check_two_operands(&mut self, validator: fn(&Value) -> bool) -> bool {
-        if cfg!(feature = "rlox_debug") {
-            println!("\nStack: {:?}", self.stack);
-        }
         match self.stack.peek(0) {
             Some(rhs) => match self.stack.peek(1) {
                 Some(lhs) => {
@@ -357,17 +345,16 @@ impl VM {
         self.stack.push(result);
     }
 
-    #[inline(always)]
     fn op_get_global(&mut self, chunk: &mut Chunk, long_global: bool) -> bool {
-        let name = self.read_constant_string(chunk, long_global);
-        match self.globals.get(&name) {
+        let var_name = self.read_constant_string(chunk, long_global);
+        match self.globals.get(&var_name) {
             Some(value) => {
                 // TODO can value be cloned here?
                 self.stack.push(value.clone());
                 true
             }
             None => {
-                self.runtime_error(chunk, &format!("Undefined variable '{}'.", &name.data));
+                self.runtime_error(chunk, &format!("Undefined variable '{}'.", &var_name.data));
                 false
             }
         }
@@ -435,6 +422,7 @@ mod tests {
     #[test]
     fn interpret_global_variable_access() {
         let source = String::from("var beverage = \"cafe au lait\";\nvar breakfast = \"beignets with \" + beverage;\nprint breakfast;");
+
         assert_eq!(VM::interpret(source), InterpretResult::Ok);
     }
 }

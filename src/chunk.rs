@@ -34,26 +34,26 @@ impl InstructionIndexConverter for InstructionIndex {
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
 pub enum OpCode {
     Add = 0,
-    Constant,
-    ConstantLong,
-    DefineGlobal,
-    DefineLongGlobal,
-    Divide,
-    Equal,
-    False,
-    GetGlobal,
-    GetLongGlobal,
-    Greater,
-    Less,
-    Multiply,
-    Negate,
-    Nil,
-    Not,
-    Pop,
-    Print,
-    Return,
-    Subtract,
-    True,
+    Constant = 1,
+    ConstantLong = 2,
+    DefineGlobal = 3,
+    DefineLongGlobal = 4,
+    Divide = 5,
+    Equal = 6,
+    False = 7,
+    GetGlobal = 8,
+    GetLongGlobal = 9,
+    Greater = 10,
+    Less = 11,
+    Multiply = 12,
+    Negate = 13,
+    Nil = 14,
+    Not = 15,
+    Pop = 16,
+    Print = 17,
+    Return = 18,
+    Subtract = 19,
+    True = 20,
 }
 
 impl Display for OpCode {
@@ -143,18 +143,13 @@ impl Chunk {
             }
             x => {
                 self.write(OpCode::ConstantLong as u8, line);
-                let bytes: [u8; 4] = (x as u32).to_le_bytes();
-
-                // rlox supports constant indexes up to 24 bits, so assert the last byte is zero
-                if bytes[3] == 0 {
-                    for b in &bytes[..3] {
-                        self.write(*b, line);
+                match x.to_most_significant_le_bytes() {
+                    Ok(bytes) => {
+                        bytes.iter().for_each(|b| self.write(*b, line));
+                        x
                     }
-
-                    return x;
+                    Err(_) => panic!("Too many constants"),
                 }
-
-                panic!("Too many constants")
             }
         }
     }
@@ -177,7 +172,7 @@ impl Chunk {
     // Adds the given value to the constant pool
     // of this chunk, and returns the index at which
     // it was added.
-    fn add_constant(&mut self, value: Value) -> InstructionIndex {
+    pub fn add_constant(&mut self, value: Value) -> InstructionIndex {
         self.constants.push(value);
         self.constants.len() - 1
     }
