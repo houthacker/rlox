@@ -5,6 +5,7 @@ use crate::debug::disassemble_chunk;
 
 use crate::object::{Obj, ObjString};
 use crate::scanner::{Scanner, Token, TokenType};
+use crate::table::Table;
 use crate::value::Value;
 use crate::{Chunk, OpCode};
 use std::mem::MaybeUninit;
@@ -72,6 +73,7 @@ struct ParseRule(Option<ParseFn>, Option<ParseFn>, Precedence);
 pub struct Compiler<'a> {
     scanner: Scanner,
     chunk: &'a mut Chunk,
+    string_cache: Table<ObjString, Value>,
     current_token: MaybeUninit<Token>,
     previous_token: MaybeUninit<Token>,
     had_error: bool,
@@ -83,6 +85,7 @@ impl<'a> Compiler<'a> {
         Self {
             scanner,
             chunk,
+            string_cache: Table::new(),
             current_token: MaybeUninit::uninit(),
             previous_token: MaybeUninit::uninit(),
             had_error: false,
@@ -126,6 +129,10 @@ impl<'a> Compiler<'a> {
 
         self.end_compiler();
         !self.had_error
+    }
+
+    pub fn string_cache(&self) -> &Table<ObjString, Value> {
+        &self.string_cache
     }
 
     // Notifies the user of an error at the current token.
@@ -260,7 +267,10 @@ impl<'a> Compiler<'a> {
             TokenPosition::Previous => unsafe { self.previous_token.assume_init_ref() },
         };
 
-        let value = Value::from_obj(Obj::String(ObjString::copy_string(&token.lexeme)));
+        let value = Value::from_obj(Obj::String(ObjString::copy_string_interned(
+            &token.lexeme,
+            &mut self.string_cache,
+        )));
 
         // Just add the constant and do not emit OpCode::Constant, since
         // identifier_constant must cause the VM to add the constant value to the stack,
@@ -433,7 +443,7 @@ fn string(compiler: &mut Compiler) {
     let ln = prev.line;
 
     let slice = &prev.lexeme[1..prev.lexeme.len() - 1];
-    let rlox_string = ObjString::copy_string(slice);
+    let rlox_string = ObjString::copy_string_interned(slice, &mut compiler.string_cache);
     let rlox_value = Value::from_obj(Obj::String(rlox_string));
     compiler.chunk.write_constant(rlox_value, ln);
 }
@@ -468,17 +478,37 @@ mod tests {
 
         assert!(compiler.compile());
 
-        assert_eq!(
-            chunk.constants,
-            vec![
-                Value::from_obj(Obj::String(ObjString::new(String::from("beverage")))),
-                Value::from_obj(Obj::String(ObjString::new(String::from("cafe au lait")))),
-                Value::from_obj(Obj::String(ObjString::new(String::from("breakfast")))),
-                Value::from_obj(Obj::String(ObjString::new(String::from("beignets with ")))),
-                Value::from_obj(Obj::String(ObjString::new(String::from("beverage")))),
-                Value::from_obj(Obj::String(ObjString::new(String::from("breakfast")))),
-            ]
-        );
+        let expected_constants = vec![
+            Value::from_obj(Obj::String(ObjString::new_interned(
+                String::from("beverage"),
+                &mut compiler.string_cache,
+            ))),
+            Value::from_obj(Obj::String(ObjString::new_interned(
+                String::from("cafe au lait"),
+                &mut compiler.string_cache,
+            ))),
+            Value::from_obj(Obj::String(ObjString::new_interned(
+                String::from("breakfast"),
+                &mut compiler.string_cache,
+            ))),
+            Value::from_obj(Obj::String(ObjString::new_interned(
+                String::from("beignets with "),
+                &mut compiler.string_cache,
+            ))),
+            Value::from_obj(Obj::String(ObjString::new_interned(
+                String::from("beverage"),
+                &mut compiler.string_cache,
+            ))),
+            Value::from_obj(Obj::String(ObjString::new_interned(
+                String::from("breakfast"),
+                &mut compiler.string_cache,
+            ))),
+        ];
+
+        assert_eq!(expected_constants.len(), chunk.constants.len());
+        expected_constants
+            .iter()
+            .all(|expected_element| chunk.constants.contains(expected_element));
 
         assert_eq!(
             chunk.code,

@@ -1,10 +1,11 @@
+use crate::table::Table;
 use crate::value::Value;
 use std::collections::hash_map::DefaultHasher;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 
 pub enum Obj {
-    String(ObjString),
+    String(*const ObjString),
 }
 
 impl Clone for Obj {
@@ -32,7 +33,9 @@ impl PartialEq for Obj {
 impl Display for Obj {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         match self {
-            Obj::String(obj_string) => write!(f, "{}", obj_string),
+            Obj::String(obj_string) => {
+                write!(f, "{}", unsafe { (*obj_string).as_ref().unwrap() })
+            }
         }
     }
 }
@@ -73,42 +76,51 @@ impl Hash for ObjString {
 }
 
 impl ObjString {
-    pub fn new(value: String) -> ObjString {
+    pub fn new_interned(value: String, cache: &mut Table<ObjString, Value>) -> &Self {
         let mut hasher = DefaultHasher::new();
         value.hash(&mut hasher);
 
-        Self {
+        let instance = Self {
             data: value.clone(),
             hash: hasher.finish(),
-        }
+        };
+
+        cache.get_or_insert(instance, Value::Nil())
     }
 
-    pub fn add(lhs: &Self, rhs: &Self) -> Self {
+    pub fn add_interned<'a>(
+        lhs: &Self,
+        rhs: &Self,
+        cache: &'a mut Table<ObjString, Value>,
+    ) -> &'a Self {
         let mut concatenated = String::with_capacity(lhs.data.len() + rhs.data.len());
         concatenated.push_str(&lhs.data);
         concatenated.push_str(&rhs.data);
 
-        Self::take_string(concatenated)
+        Self::take_string_interned(concatenated, cache)
     }
 
-    pub fn copy_string(value: &str) -> Self {
-        Self::new(String::from(value))
+    pub fn copy_string_interned<'a>(
+        value: &str,
+        cache: &'a mut Table<ObjString, Value>,
+    ) -> &'a Self {
+        Self::new_interned(String::from(value), cache)
     }
 
-    pub fn take_string(value: String) -> Self {
-        Self::new(value)
+    pub fn take_string_interned(value: String, cache: &mut Table<ObjString, Value>) -> &Self {
+        Self::new_interned(value, cache)
     }
 }
 
-pub fn obj_as_rlox_string(obj: Obj) -> ObjString {
+pub fn obj_as_rlox_string_ref<'a>(obj: Obj) -> &'a ObjString {
     match obj {
-        Obj::String(obj_string) => obj_string,
+        Obj::String(obj_string) => unsafe { obj_string.as_ref().unwrap() },
     }
 }
 
-pub fn value_as_rlox_string(value: Value) -> ObjString {
+pub fn value_as_rlox_string_ref<'a>(value: Value) -> &'a ObjString {
     if let Value::Obj(obj) = value {
-        return obj_as_rlox_string(obj);
+        return obj_as_rlox_string_ref(obj);
     }
 
     panic!("Given Value is not an Obj")

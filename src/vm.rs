@@ -1,7 +1,7 @@
 #[cfg(feature = "rlox_debug")]
 use crate::debug::disassemble_instruction;
 
-use crate::object::{value_as_rlox_string, Obj, ObjString};
+use crate::object::{value_as_rlox_string_ref, Obj, ObjString};
 use crate::value::{as_bool, as_number, print_value, Value};
 use crate::{Chunk, Compiler, OpCode};
 
@@ -24,14 +24,16 @@ pub struct VM {
     ip: *mut u8,
     stack: UnsafeStack<Value, 256>,
     globals: Table<ObjString, Value>,
+    strings: Table<ObjString, Value>,
 }
 
 impl VM {
-    pub fn new() -> Self {
+    pub fn new(strings: Table<ObjString, Value>) -> Self {
         Self {
             ip: ptr::null_mut(),
             stack: UnsafeStack::new(),
             globals: Table::new(),
+            strings,
         }
     }
 
@@ -42,7 +44,7 @@ impl VM {
         if !compiler.compile() {
             InterpretResult::CompileError
         } else {
-            let mut vm = VM::new();
+            let mut vm = VM::new(Table::from(compiler.string_cache()));
             unsafe { vm.run(&mut chunk) }
         }
     }
@@ -87,29 +89,25 @@ impl VM {
                     self.stack.push(value);
                 }
                 OpCode::DefineGlobal => {
-                    let var_name: ObjString = self.read_constant_string(chunk, false);
-
                     // Note: the clox implementation pop()'s the value off of the stack
                     // _after_ inserting it on the stack (using peek(0)).
                     // This is to support a triggered garbage collection while interning the string.
                     // In rlox we hope to prevent the need for a GC due to rusts'
                     // memory model characteristics.
                     let value = self.stack.pop().unwrap();
-                    self.globals.insert(var_name, value);
+                    let var_name: ObjString = self.read_constant_string(chunk, false).clone();
 
-                    if cfg!(feature = "rlox_debug") {
-                        println!("Globals: {:?}", &self.globals);
-                    }
+                    self.globals.insert(var_name, value);
                 }
                 OpCode::DefineLongGlobal => {
-                    let var_name: ObjString = self.read_constant_string(chunk, true);
-
                     // Note: the clox implementation pop()'s the value off of the stack
                     // _after_ inserting it on the stack (using peek(0)).
                     // This is to support a triggered garbage collection while interning the string.
                     // In rlox we hope to prevent the need for a GC due to rusts'
                     // memory model characteristics.
                     let value = self.stack.pop().unwrap();
+                    let var_name: ObjString = self.read_constant_string(chunk, true).clone();
+
                     self.globals.insert(var_name, value);
                 }
                 OpCode::Divide => {
@@ -244,7 +242,11 @@ impl VM {
         let rhs = self.stack.pop();
         let lhs = self.stack.pop();
         if let (Some(y), Some(x)) = (rhs, lhs) {
-            let concatenated = ObjString::add(&value_as_rlox_string(x), &value_as_rlox_string(y));
+            let concatenated = ObjString::add_interned(
+                &value_as_rlox_string_ref(x),
+                &value_as_rlox_string_ref(y),
+                &mut self.strings,
+            );
             self.stack.push(Value::from_obj(Obj::String(concatenated)))
         }
     }
@@ -285,7 +287,7 @@ impl VM {
         self.stack.reset();
     }
 
-    fn read_constant_string(&mut self, chunk: &mut Chunk, long_constant: bool) -> ObjString {
+    fn read_constant_string(&mut self, chunk: &mut Chunk, long_constant: bool) -> &ObjString {
         let value = unsafe {
             if long_constant {
                 chunk.read_constant(self.read_long_constant_index())
@@ -294,7 +296,7 @@ impl VM {
             }
         };
 
-        value_as_rlox_string(value)
+        value_as_rlox_string_ref(value)
     }
 
     #[inline(always)]
@@ -346,7 +348,7 @@ impl VM {
     }
 
     fn op_get_global(&mut self, chunk: &mut Chunk, long_global: bool) -> bool {
-        let var_name = self.read_constant_string(chunk, long_global);
+        let var_name = self.read_constant_string(chunk, long_global).clone();
         match self.globals.get(&var_name) {
             Some(value) => {
                 // TODO can value be cloned here?
@@ -354,7 +356,7 @@ impl VM {
                 true
             }
             None => {
-                self.runtime_error(chunk, &format!("Undefined variable '{}'.", &var_name.data));
+                self.runtime_error(chunk, &format!("Undefined variable '{}'.", var_name.data));
                 false
             }
         }
@@ -389,21 +391,14 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore] // return statements do not yet work
-    fn interpret_test_chunk() {
-        let source = String::from("return -((1.2 + 3.4) / 5.6)");
-        assert_eq!(VM::interpret(source), InterpretResult::Ok);
-    }
-
-    #[test]
     fn interpret_numeric_expr() {
-        let source = String::from("!(5 - 4 > 3 * 2 == !nil)");
+        let source = String::from("!(5 - 4 > 3 * 2 == !nil);");
         assert_eq!(VM::interpret(source), InterpretResult::Ok);
     }
 
     #[test]
     fn interpret_string_concatenation() {
-        let source = String::from("\"st\" + \"ri\" + \"ng\"");
+        let source = String::from("\"st\" + \"ri\" + \"ng\";");
         assert_eq!(VM::interpret(source), InterpretResult::Ok);
     }
 
@@ -422,7 +417,6 @@ mod tests {
     #[test]
     fn interpret_global_variable_access() {
         let source = String::from("var beverage = \"cafe au lait\";\nvar breakfast = \"beignets with \" + beverage;\nprint breakfast;");
-
         assert_eq!(VM::interpret(source), InterpretResult::Ok);
     }
 }
