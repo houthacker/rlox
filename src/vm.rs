@@ -1,6 +1,5 @@
 #[cfg(feature = "rlox_debug")]
 use crate::debug::disassemble_instruction;
-use std::env::var;
 
 use crate::object::{value_as_rlox_string_ref, Obj, ObjString};
 use crate::value::{as_bool, as_number, print_value, Value};

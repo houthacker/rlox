@@ -1,7 +1,6 @@
+use crate::object::Hashed;
 use core::fmt::{Debug, Display, Formatter};
 use std::alloc::{alloc_zeroed, dealloc, handle_alloc_error, realloc, Layout};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::ptr;
 use std::ptr::NonNull;
@@ -16,25 +15,19 @@ fn next_capacity(capacity: usize) -> usize {
     }
 }
 
-fn hash_key<K: Hash>(key: &K) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    key.hash(&mut hasher);
-    hasher.finish()
-}
-
-enum TableEntry<K: Hash + PartialEq, V> {
+enum TableEntry<K: Hashed + PartialEq, V> {
     Uninitialized,
     Initialized(K, V),
 }
 
-pub struct Table<K: Hash + PartialEq, V> {
+pub struct Table<K: Hashed + PartialEq, V> {
     count: usize,
     capacity: usize,
     entries: NonNull<TableEntry<K, V>>,
     _marker: PhantomData<TableEntry<K, V>>,
 }
 
-impl<K: Hash + PartialEq + Debug, V: Debug> Debug for Table<K, V> {
+impl<K: Hashed + PartialEq + Debug, V: Debug> Debug for Table<K, V> {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         let mut repr = String::from("Table {\n");
 
@@ -56,7 +49,7 @@ impl<K: Hash + PartialEq + Debug, V: Debug> Debug for Table<K, V> {
     }
 }
 
-impl<K: Hash + PartialEq + Display, V: Display> Display for Table<K, V> {
+impl<K: Hashed + PartialEq + Display, V: Display> Display for Table<K, V> {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         let mut repr = String::new();
         repr.push('{');
@@ -79,13 +72,13 @@ impl<K: Hash + PartialEq + Display, V: Display> Display for Table<K, V> {
     }
 }
 
-impl<K: Hash + PartialEq, V> Table<K, V> {
+impl<K: Hashed + PartialEq, V> Table<K, V> {
     fn entry_ptr_to_ref<'a>(entry: *mut TableEntry<K, V>) -> &'a TableEntry<K, V> {
         unsafe { entry.as_ref().unwrap_unchecked() }
     }
 }
 
-impl<K: Hash + PartialEq + Clone, V: Clone> Table<K, V> {
+impl<K: Hashed + PartialEq + Clone, V: Clone> Table<K, V> {
     pub fn add_all(src: &Table<K, V>, dst: &mut Table<K, V>) {
         for n in 0..src.capacity {
             unsafe {
@@ -108,7 +101,7 @@ impl<K: Hash + PartialEq + Clone, V: Clone> Table<K, V> {
     }
 }
 
-impl<K: Hash + PartialEq, V> Drop for Table<K, V> {
+impl<K: Hashed + PartialEq, V> Drop for Table<K, V> {
     fn drop(&mut self) {
         if self.capacity != 0 {
             for n in 0..self.capacity {
@@ -123,7 +116,7 @@ impl<K: Hash + PartialEq, V> Drop for Table<K, V> {
     }
 }
 
-impl<K: Hash + PartialEq, V> Table<K, V> {
+impl<K: Hashed + PartialEq, V> Table<K, V> {
     pub fn new() -> Self {
         Self {
             count: 0,
@@ -138,14 +131,12 @@ impl<K: Hash + PartialEq, V> Table<K, V> {
     }
 
     pub fn insert(&mut self, key: K, value: V) -> bool {
-        let hash = hash_key(&key);
-        let (is_new, _ignored) = unsafe { self.insert_internal(key, hash, value) };
+        let (is_new, _ignored) = unsafe { self.insert_internal(key, value) };
         is_new
     }
 
     pub fn get_or_insert(&mut self, key: K, value: V) -> &K {
-        let hash = hash_key(&key);
-        let (_ignored, entry) = unsafe { self.insert_internal(key, hash, value) };
+        let (_ignored, entry) = unsafe { self.insert_internal(key, value) };
         match entry {
             TableEntry::Initialized(k, _v) => k,
 
@@ -159,7 +150,7 @@ impl<K: Hash + PartialEq, V> Table<K, V> {
         if self.count == 0 {
             None
         } else {
-            let (_, entry_ptr) = self.find_entry(key, hash_key(key), self.capacity);
+            let (_, entry_ptr) = self.find_entry(key, self.capacity);
             let entry_ref = Self::entry_ptr_to_ref(entry_ptr);
             match entry_ref {
                 TableEntry::Initialized(_ignored, value) => Some(value),
@@ -172,7 +163,7 @@ impl<K: Hash + PartialEq, V> Table<K, V> {
         if self.count == 0 {
             false
         } else {
-            let (idx, entry_ptr) = self.find_entry(key, hash_key(key), self.capacity);
+            let (idx, entry_ptr) = self.find_entry(key, self.capacity);
             unsafe {
                 let entry = ptr::read(entry_ptr);
                 match entry {
@@ -187,18 +178,13 @@ impl<K: Hash + PartialEq, V> Table<K, V> {
         }
     }
 
-    unsafe fn insert_internal(
-        &mut self,
-        key: K,
-        key_hash: u64,
-        value: V,
-    ) -> (bool, &TableEntry<K, V>) {
+    unsafe fn insert_internal(&mut self, key: K, value: V) -> (bool, &TableEntry<K, V>) {
         if self.is_at_capacity() {
             let new_capacity = next_capacity(self.capacity);
             self.grow(new_capacity);
         }
 
-        let (_idx, entry) = self.find_entry(&key, key_hash, self.capacity);
+        let (_idx, entry) = self.find_entry(&key, self.capacity);
         let is_new = match entry.as_ref().unwrap() {
             TableEntry::Initialized(_ignored_k, _ignored_v) => false,
             TableEntry::Uninitialized => true,
@@ -215,13 +201,8 @@ impl<K: Hash + PartialEq, V> Table<K, V> {
         (is_new, &*entry)
     }
 
-    fn find_entry(
-        &mut self,
-        key: &K,
-        key_hash: u64,
-        capacity: usize,
-    ) -> (usize, *mut TableEntry<K, V>) {
-        let mut index = key_hash % capacity as u64;
+    fn find_entry(&mut self, key: &K, capacity: usize) -> (usize, *mut TableEntry<K, V>) {
+        let mut index = key.calculated_hash() % capacity as u64;
 
         loop {
             let entry_ptr = unsafe { self.entries.as_ptr().add(index as usize) };
@@ -280,7 +261,7 @@ impl<K: Hash + PartialEq, V> Table<K, V> {
             match entry {
                 TableEntry::Uninitialized => continue,
                 TableEntry::Initialized(k, _ignored_v) => {
-                    let (new_index, _ignored) = self.find_entry(k, hash_key(k), new_capacity);
+                    let (new_index, _ignored) = self.find_entry(k, new_capacity);
                     if old_index != new_index {
                         ptr::copy::<TableEntry<K, V>>(
                             entry,
@@ -306,6 +287,23 @@ impl<K: Hash + PartialEq, V> Table<K, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    impl Hashed for String {
+        fn calculated_hash(&self) -> u64 {
+            let mut hasher = DefaultHasher::new();
+            self.hash(&mut hasher);
+
+            hasher.finish()
+        }
+    }
+
+    impl Hashed for u64 {
+        fn calculated_hash(&self) -> u64 {
+            *self
+        }
+    }
 
     #[test]
     fn no_alloc_in_empty_table() {

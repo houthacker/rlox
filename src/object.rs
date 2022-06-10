@@ -40,6 +40,10 @@ impl Display for Obj {
     }
 }
 
+pub trait Hashed {
+    fn calculated_hash(&self) -> u64;
+}
+
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
 pub struct ObjString {
     pub data: String,
@@ -72,6 +76,12 @@ impl Display for ObjString {
 impl Hash for ObjString {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.data.hash(state);
+    }
+}
+
+impl Hashed for ObjString {
+    fn calculated_hash(&self) -> u64 {
+        self.hash
     }
 }
 
