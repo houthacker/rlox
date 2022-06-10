@@ -1,5 +1,6 @@
 #[cfg(feature = "rlox_debug")]
 use crate::debug::disassemble_instruction;
+use std::env::var;
 
 use crate::object::{value_as_rlox_string_ref, Obj, ObjString};
 use crate::value::{as_bool, as_number, print_value, Value};
@@ -99,7 +100,7 @@ impl VM {
 
                     self.globals.insert(var_name, value);
                 }
-                OpCode::DefineLongGlobal => {
+                OpCode::DefineGlobalLong => {
                     // Note: the clox implementation pop()'s the value off of the stack
                     // _after_ inserting it on the stack (using peek(0)).
                     // This is to support a triggered garbage collection while interning the string.
@@ -134,7 +135,7 @@ impl VM {
                         return InterpretResult::RuntimeError;
                     }
                 }
-                OpCode::GetLongGlobal => {
+                OpCode::GetGlobalLong => {
                     if !self.op_get_global(chunk, true) {
                         return InterpretResult::RuntimeError;
                     }
@@ -203,6 +204,16 @@ impl VM {
                 OpCode::Return => {
                     // Exit rlox interpreter
                     return InterpretResult::Ok;
+                }
+                OpCode::SetGlobal => {
+                    if !self.op_set_global(chunk, false) {
+                        return InterpretResult::RuntimeError;
+                    }
+                }
+                OpCode::SetGlobalLong => {
+                    if !self.op_set_global(chunk, true) {
+                        return InterpretResult::RuntimeError;
+                    }
                 }
                 OpCode::Subtract => {
                     self.op_subtract();
@@ -362,6 +373,22 @@ impl VM {
         }
     }
 
+    fn op_set_global(&mut self, chunk: &mut Chunk, long_global: bool) -> bool {
+        let var_name = self.read_constant_string(chunk, long_global).clone();
+
+        match self.globals.get(&var_name) {
+            Some(_) => {
+                let value = self.stack.peek(0).unwrap().clone();
+                self.globals.insert(var_name, value);
+                true
+            }
+            None => {
+                self.runtime_error(chunk, &format!("Undefined variable '{}'.", &var_name.data));
+                false
+            }
+        }
+    }
+
     #[inline(always)]
     unsafe fn read_byte(&mut self) -> u8 {
         let byte = *self.ip;
@@ -417,6 +444,13 @@ mod tests {
     #[test]
     fn interpret_global_variable_access() {
         let source = String::from("var beverage = \"cafe au lait\";\nvar breakfast = \"beignets with \" + beverage;\nprint breakfast;");
+        assert_eq!(VM::interpret(source), InterpretResult::Ok);
+    }
+
+    #[test]
+    fn interpret_global_variable_assignment() {
+        let source = String::from(
+            "var breakfast = \"beignets\";\nvar beverage = \"cafe au lait\";\nbreakfast = \"beignets with \" + beverage;\nprint breakfast;");
         assert_eq!(VM::interpret(source), InterpretResult::Ok);
     }
 }

@@ -67,7 +67,8 @@ enum TokenPosition {
 }
 
 type ParseFn = fn(compiler: &mut Compiler);
-struct ParseRule(Option<ParseFn>, Option<ParseFn>, Precedence);
+type PrefixParseFn = fn(compiler: &mut Compiler, can_assign: bool);
+struct ParseRule(Option<PrefixParseFn>, Option<ParseFn>, Precedence);
 
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
 pub struct Compiler<'a> {
@@ -242,9 +243,13 @@ impl<'a> Compiler<'a> {
     fn parse_precedence(&mut self, precedence: Precedence) {
         self.advance();
 
+        // To prevent assignments like a * b = c + d, determine first
+        // if an assignment is allowed in this context.
+        let can_assign = precedence <= Precedence::Assignment;
+
         // prefix rule
         match Compiler::get_rule(unsafe { self.previous_token.assume_init_ref() }.kind).0 {
-            Some(parse_fn) => parse_fn(self),
+            Some(parse_fn) => parse_fn(self, can_assign),
             None => self.error("Expect expression."),
         }
 
@@ -258,6 +263,10 @@ impl<'a> Compiler<'a> {
                 Some(parse_fn) => parse_fn(self),
                 None => { /* TODO error out? */ }
             }
+        }
+
+        if can_assign && self.match_token_type(TokenType::Equal) {
+            self.error("Invalid assignment target.");
         }
     }
 
@@ -290,7 +299,7 @@ impl<'a> Compiler<'a> {
         } else {
             match global_index.to_most_significant_le_bytes() {
                 Ok(bytes) => {
-                    self.emit_opcode(OpCode::DefineLongGlobal);
+                    self.emit_opcode(OpCode::DefineGlobalLong);
                     for byte in bytes {
                         self.emit_byte(byte);
                     }
@@ -383,7 +392,7 @@ impl<'a> Compiler<'a> {
     }
 }
 
-fn unary(compiler: &mut Compiler) {
+fn unary(compiler: &mut Compiler, _can_assign: bool) {
     let token_type = unsafe { compiler.previous_token.assume_init_ref() }.kind;
     compiler.parse_precedence(Precedence::Unary);
 
@@ -414,7 +423,7 @@ fn binary(compiler: &mut Compiler) {
     }
 }
 
-fn literal(compiler: &mut Compiler) {
+fn literal(compiler: &mut Compiler, _can_assign: bool) {
     match unsafe { compiler.previous_token.assume_init_ref() }.kind {
         TokenType::False => compiler.emit_opcode(OpCode::False),
         TokenType::Nil => compiler.emit_opcode(OpCode::Nil),
@@ -423,12 +432,12 @@ fn literal(compiler: &mut Compiler) {
     }
 }
 
-fn grouping(compiler: &mut Compiler) {
+fn grouping(compiler: &mut Compiler, _can_assign: bool) {
     compiler.expression();
     compiler.consume(TokenType::RightParen, "Expect ')' after expression.")
 }
 
-fn number(compiler: &mut Compiler) {
+fn number(compiler: &mut Compiler, _can_assign: bool) {
     let prev = unsafe { compiler.previous_token.assume_init_ref() };
     let ln = prev.line;
     let number = prev.lexeme.parse::<f64>().unwrap();
@@ -438,7 +447,7 @@ fn number(compiler: &mut Compiler) {
         .write_constant(Value::from_number(number), ln);
 }
 
-fn string(compiler: &mut Compiler) {
+fn string(compiler: &mut Compiler, _can_assign: bool) {
     let prev = unsafe { compiler.previous_token.assume_init_ref() };
     let ln = prev.line;
 
@@ -448,16 +457,28 @@ fn string(compiler: &mut Compiler) {
     compiler.chunk.write_constant(rlox_value, ln);
 }
 
-fn variable(compiler: &mut Compiler) {
-    named_variable(compiler);
+fn variable(compiler: &mut Compiler, can_assign: bool) {
+    named_variable(compiler, can_assign);
 }
 
-fn named_variable(compiler: &mut Compiler) {
+fn named_variable(compiler: &mut Compiler, can_assign: bool) {
     let idx = compiler.identifier_constant(TokenPosition::Previous);
+    let is_assignment = can_assign && compiler.match_token_type(TokenType::Equal);
+
     if idx <= u8::MAX as InstructionIndex {
-        compiler.emit_bytes(OpCode::GetGlobal as u8, idx as u8);
+        if is_assignment {
+            compiler.expression();
+            compiler.emit_bytes(OpCode::SetGlobal as u8, idx as u8);
+        } else {
+            compiler.emit_bytes(OpCode::GetGlobal as u8, idx as u8);
+        }
     } else {
-        compiler.emit_opcode(OpCode::GetLongGlobal);
+        if is_assignment {
+            compiler.expression();
+            compiler.emit_opcode(OpCode::SetGlobalLong);
+        } else {
+            compiler.emit_opcode(OpCode::GetGlobalLong);
+        }
 
         match idx.to_most_significant_le_bytes() {
             Ok(bytes) => bytes.iter().for_each(|b| compiler.emit_byte(*b)),
@@ -571,5 +592,14 @@ mod tests {
                 OpCode::Return as u8,
             ]
         );
+    }
+
+    #[test]
+    fn invalid_assignment_target() {
+        let source = String::from("a * b = c + d;");
+        let mut chunk = Chunk::new();
+        let mut compiler = Compiler::new(Scanner::new(source), &mut chunk);
+
+        debug_assert!(!compiler.compile())
     }
 }
