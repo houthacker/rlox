@@ -30,6 +30,24 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: InstructionIndex) -> Instr
         Ok(OpCode::ConstantLong) => {
             constant_long_instruction(&OpCode::ConstantLong.to_string(), chunk, offset)
         }
+        Ok(OpCode::DefineGlobal) => {
+            constant_instruction(&OpCode::DefineGlobal.to_string(), chunk, offset)
+        }
+        Ok(OpCode::DefineGlobalLong) => {
+            constant_long_instruction(&OpCode::DefineGlobalLong.to_string(), chunk, offset)
+        }
+        Ok(OpCode::GetGlobal) => {
+            constant_instruction(&OpCode::GetGlobal.to_string(), chunk, offset)
+        }
+        Ok(OpCode::GetGlobalLong) => {
+            constant_long_instruction(&OpCode::GetGlobalLong.to_string(), chunk, offset)
+        }
+        Ok(OpCode::SetGlobal) => {
+            constant_instruction(&OpCode::SetGlobal.to_string(), chunk, offset)
+        }
+        Ok(OpCode::SetGlobalLong) => {
+            constant_long_instruction(&OpCode::SetGlobalLong.to_string(), chunk, offset)
+        }
         Ok(opcode) => simple_instruction(&opcode.to_string(), offset),
         Err(msg) => {
             println!("{} {}", msg, instruction);

@@ -4,24 +4,58 @@ use std::fmt::{Display, Formatter};
 pub type InstructionIndex = usize;
 pub type LineNumber = u32;
 
+/// rlox supports constant indexes up to 24 bits, so this conversion is used
+/// a lot in the rlox Compiler / VM
+pub trait InstructionIndexConverter {
+    fn to_most_significant_le_bytes(&self) -> Result<[u8; 3], &'static str>;
+
+    fn from_most_significant_le_bytes(data: [u8; 3]) -> InstructionIndex;
+}
+
+impl InstructionIndexConverter for InstructionIndex {
+    fn to_most_significant_le_bytes(&self) -> Result<[u8; 3], &'static str> {
+        let data = self.to_le_bytes();
+
+        // Ensure all bytes after data[2] are 0, since we don't want
+        // to lose any significance here. If so, we return Err
+        if data[0] + data[1] + data[2] != data.iter().sum() {
+            Err("Cannot convert: only 24 most significant bits may be nonzero.")
+        } else {
+            Ok([data[0], data[1], data[2]])
+        }
+    }
+
+    fn from_most_significant_le_bytes(data: [u8; 3]) -> InstructionIndex {
+        InstructionIndex::from_le_bytes([data[0], data[1], data[2], 0, 0, 0, 0, 0])
+    }
+}
+
 /// bytecode instructions for the rlox VM
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
 pub enum OpCode {
-    Add,
-    Constant,
-    ConstantLong,
-    Divide,
-    Equal,
-    False,
-    Greater,
-    Less,
-    Multiply,
-    Negate,
-    Nil,
-    Not,
-    Return,
-    Subtract,
-    True,
+    Add = 0,
+    Constant = 1,
+    ConstantLong = 2,
+    DefineGlobal = 3,
+    DefineGlobalLong = 4,
+    Divide = 5,
+    Equal = 6,
+    False = 7,
+    GetGlobal = 8,
+    GetGlobalLong = 9,
+    Greater = 10,
+    Less = 11,
+    Multiply = 12,
+    Negate = 13,
+    Nil = 14,
+    Not = 15,
+    Pop = 16,
+    Print = 17,
+    Return = 18,
+    SetGlobal = 19,
+    SetGlobalLong = 20,
+    Subtract = 21,
+    True = 22,
 }
 
 impl Display for OpCode {
@@ -38,18 +72,26 @@ impl TryFrom<u8> for OpCode {
             0 => Ok(OpCode::Add),
             1 => Ok(OpCode::Constant),
             2 => Ok(OpCode::ConstantLong),
-            3 => Ok(OpCode::Divide),
-            4 => Ok(OpCode::Equal),
-            5 => Ok(OpCode::False),
-            6 => Ok(OpCode::Greater),
-            7 => Ok(OpCode::Less),
-            8 => Ok(OpCode::Multiply),
-            9 => Ok(OpCode::Negate),
-            10 => Ok(OpCode::Nil),
-            11 => Ok(OpCode::Not),
-            12 => Ok(OpCode::Return),
-            13 => Ok(OpCode::Subtract),
-            14 => Ok(OpCode::True),
+            3 => Ok(OpCode::DefineGlobal),
+            4 => Ok(OpCode::DefineGlobalLong),
+            5 => Ok(OpCode::Divide),
+            6 => Ok(OpCode::Equal),
+            7 => Ok(OpCode::False),
+            8 => Ok(OpCode::GetGlobal),
+            9 => Ok(OpCode::GetGlobalLong),
+            10 => Ok(OpCode::Greater),
+            11 => Ok(OpCode::Less),
+            12 => Ok(OpCode::Multiply),
+            13 => Ok(OpCode::Negate),
+            14 => Ok(OpCode::Nil),
+            15 => Ok(OpCode::Not),
+            16 => Ok(OpCode::Pop),
+            17 => Ok(OpCode::Print),
+            18 => Ok(OpCode::Return),
+            19 => Ok(OpCode::SetGlobal),
+            20 => Ok(OpCode::SetGlobalLong),
+            21 => Ok(OpCode::Subtract),
+            22 => Ok(OpCode::True),
             _ => Err("Unknown OpCode"),
         }
     }
@@ -96,31 +138,27 @@ impl Chunk {
     /// # Arguments
     /// * `value` - The constant value to write
     /// * `line` - The related source code line number  
-    pub fn write_constant(&mut self, value: Value, line: LineNumber) {
+    pub fn write_constant(&mut self, value: Value, line: LineNumber) -> InstructionIndex {
         match self.add_constant(value) {
             x if x <= u8::MAX as InstructionIndex => {
                 self.write(OpCode::Constant as u8, line);
                 self.write(x as u8, line);
+                x
             }
             x => {
                 self.write(OpCode::ConstantLong as u8, line);
-                let bytes: [u8; 4] = (x as u32).to_le_bytes();
-
-                // rlox supports constant indexes up to 24 bits, so assert the last byte is zero
-                if bytes[3] == 0 {
-                    for b in &bytes[..3] {
-                        self.write(*b, line);
+                match x.to_most_significant_le_bytes() {
+                    Ok(bytes) => {
+                        bytes.iter().for_each(|b| self.write(*b, line));
+                        x
                     }
-
-                    return;
+                    Err(_) => panic!("Too many constants"),
                 }
-
-                panic!("Too many constants")
             }
         }
     }
 
-    pub fn read_constant(&self, index: usize) -> Value {
+    pub fn read_constant(&self, index: InstructionIndex) -> Value {
         self.constants[index].clone()
     }
 
@@ -138,7 +176,7 @@ impl Chunk {
     // Adds the given value to the constant pool
     // of this chunk, and returns the index at which
     // it was added.
-    fn add_constant(&mut self, value: Value) -> InstructionIndex {
+    pub fn add_constant(&mut self, value: Value) -> InstructionIndex {
         self.constants.push(value);
         self.constants.len() - 1
     }

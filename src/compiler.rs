@@ -1,4 +1,4 @@
-use crate::chunk::LineNumber;
+use crate::chunk::{InstructionIndex, InstructionIndexConverter};
 
 #[cfg(feature = "rlox_debug")]
 use crate::debug::disassemble_chunk;
@@ -61,18 +61,24 @@ impl TryFrom<u8> for Precedence {
     }
 }
 
-type ParseFn = fn(compiler: &mut Compiler);
-struct ParseRule(Option<ParseFn>, Option<ParseFn>, Precedence);
+enum TokenPosition {
+    Current,
+    Previous,
+}
 
-//#[cfg_attr(feature = "rlox_debug", derive(Debug))]
+type ParseFn = fn(compiler: &mut Compiler);
+type PrefixParseFn = fn(compiler: &mut Compiler, can_assign: bool);
+struct ParseRule(Option<PrefixParseFn>, Option<ParseFn>, Precedence);
+
+#[cfg_attr(feature = "rlox_debug", derive(Debug))]
 pub struct Compiler<'a> {
     scanner: Scanner,
     chunk: &'a mut Chunk,
+    string_cache: Table<ObjString, Value>,
     current_token: MaybeUninit<Token>,
     previous_token: MaybeUninit<Token>,
     had_error: bool,
     panic_mode: bool,
-    string_cache: Table<ObjString, Value>,
 }
 
 impl<'a> Compiler<'a> {
@@ -80,11 +86,11 @@ impl<'a> Compiler<'a> {
         Self {
             scanner,
             chunk,
+            string_cache: Table::new(),
             current_token: MaybeUninit::uninit(),
             previous_token: MaybeUninit::uninit(),
             had_error: false,
             panic_mode: false,
-            string_cache: Table::new(),
         }
     }
 
@@ -99,6 +105,7 @@ impl<'a> Compiler<'a> {
             TokenType::False        => ParseRule(Some(literal), None,           Precedence::None),
             TokenType::Greater      => ParseRule(None,          Some(binary),   Precedence::Comparison),
             TokenType::GreaterEqual => ParseRule(None,          Some(binary),   Precedence::Comparison),
+            TokenType::Identifier   => ParseRule(Some(variable),None,           Precedence::None),
             TokenType::LeftParen    => ParseRule(Some(grouping),None,           Precedence::None),
             TokenType::Less         => ParseRule(None,          Some(binary),   Precedence::Comparison),
             TokenType::LessEqual    => ParseRule(None,          Some(binary),   Precedence::Comparison),
@@ -116,8 +123,10 @@ impl<'a> Compiler<'a> {
 
     pub fn compile(&mut self) -> bool {
         self.advance();
-        self.expression();
-        self.consume(TokenType::EOF, "Expect end of expression.");
+
+        while !self.match_token_type(TokenType::EOF) {
+            self.declaration();
+        }
 
         self.end_compiler();
         !self.had_error
@@ -187,6 +196,28 @@ impl<'a> Compiler<'a> {
         self.error_at_current(message);
     }
 
+    fn check_token_type(&self, token_type: TokenType) -> bool {
+        unsafe { self.current_token.assume_init_ref() }.kind == token_type
+    }
+
+    fn match_token_type(&mut self, token_type: TokenType) -> bool {
+        if !self.check_token_type(token_type) {
+            false
+        } else {
+            self.advance();
+            true
+        }
+    }
+
+    fn emit_opcode(&mut self, opcode: OpCode) {
+        self.emit_byte(opcode as u8);
+    }
+
+    fn emit_opcodes(&mut self, opcode1: OpCode, opcode2: OpCode) {
+        self.emit_opcode(opcode1);
+        self.emit_opcode(opcode2);
+    }
+
     fn emit_byte(&mut self, byte: u8) {
         let ln = unsafe { self.previous_token.assume_init_ref() }.line;
         self.chunk.write(byte, ln);
@@ -198,11 +229,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn emit_return(&mut self) {
-        self.emit_byte(OpCode::Return as u8);
-    }
-
-    fn emit_constant(&mut self, value: Value, line: LineNumber) {
-        self.chunk.write_constant(value, line);
+        self.emit_opcode(OpCode::Return);
     }
 
     fn end_compiler(&mut self) {
@@ -216,9 +243,13 @@ impl<'a> Compiler<'a> {
     fn parse_precedence(&mut self, precedence: Precedence) {
         self.advance();
 
+        // To prevent assignments like a * b = c + d, determine first
+        // if an assignment is allowed in this context.
+        let can_assign = precedence <= Precedence::Assignment;
+
         // prefix rule
         match Compiler::get_rule(unsafe { self.previous_token.assume_init_ref() }.kind).0 {
-            Some(parse_fn) => parse_fn(self),
+            Some(parse_fn) => parse_fn(self, can_assign),
             None => self.error("Expect expression."),
         }
 
@@ -233,20 +264,141 @@ impl<'a> Compiler<'a> {
                 None => { /* TODO error out? */ }
             }
         }
+
+        if can_assign && self.match_token_type(TokenType::Equal) {
+            self.error("Invalid assignment target.");
+        }
+    }
+
+    fn identifier_constant(&mut self, token_position: TokenPosition) -> InstructionIndex {
+        let token = match token_position {
+            TokenPosition::Current => unsafe { self.current_token.assume_init_ref() },
+            TokenPosition::Previous => unsafe { self.previous_token.assume_init_ref() },
+        };
+
+        let value = Value::from_obj(Obj::String(ObjString::copy_string_interned(
+            &token.lexeme,
+            &mut self.string_cache,
+        )));
+
+        // Just add the constant and do not emit OpCode::Constant, since
+        // identifier_constant must cause the VM to add the constant value to the stack,
+        // not its' related variable name.
+        self.chunk.add_constant(value)
+    }
+
+    fn parse_variable(&mut self, error_message: &str) -> InstructionIndex {
+        self.consume(TokenType::Identifier, error_message);
+
+        self.identifier_constant(TokenPosition::Previous)
+    }
+
+    fn define_global_variable(&mut self, global_index: InstructionIndex) {
+        if global_index <= u8::MAX as InstructionIndex {
+            self.emit_bytes(OpCode::DefineGlobal as u8, global_index as u8);
+        } else {
+            match global_index.to_most_significant_le_bytes() {
+                Ok(bytes) => {
+                    self.emit_opcode(OpCode::DefineGlobalLong);
+                    for byte in bytes {
+                        self.emit_byte(byte);
+                    }
+                }
+                Err(_) => {
+                    // TODO log error message?
+                    self.error("Too many global variables.")
+                }
+            }
+        }
     }
 
     fn expression(&mut self) {
         self.parse_precedence(Precedence::Assignment);
     }
+
+    fn var_declaration(&mut self) {
+        let global_index = self.parse_variable("Expect variable name.");
+
+        if self.match_token_type(TokenType::Equal) {
+            self.expression();
+        } else {
+            self.emit_opcode(OpCode::Nil);
+        }
+
+        self.consume(
+            TokenType::Semicolon,
+            "Expect ';' after variable declaration.",
+        );
+
+        self.define_global_variable(global_index);
+    }
+
+    fn expression_statement(&mut self) {
+        self.expression();
+        self.consume(TokenType::Semicolon, "Expect ';' after expression");
+        self.emit_opcode(OpCode::Pop);
+    }
+
+    fn print_statement(&mut self) {
+        self.expression();
+        self.consume(TokenType::Semicolon, "Expect ';' after value.");
+        self.emit_opcode(OpCode::Print);
+    }
+
+    // Continue to retrieve tokens until a statement boundary has been reached.
+    // Then try to continue compilation.
+    fn synchronize(&mut self) {
+        while unsafe { self.current_token.assume_init_ref() }.kind != TokenType::EOF {
+            if unsafe { self.previous_token.assume_init_ref().kind == TokenType::Semicolon } {
+                return;
+            }
+
+            match unsafe { self.current_token.assume_init_ref() }.kind {
+                TokenType::Class
+                | TokenType::Fun
+                | TokenType::Var
+                | TokenType::For
+                | TokenType::If
+                | TokenType::While
+                | TokenType::Print
+                | TokenType::Return => {
+                    return;
+                }
+                _ => (),
+            }
+
+            self.advance();
+        }
+    }
+
+    fn declaration(&mut self) {
+        if self.match_token_type(TokenType::Var) {
+            self.var_declaration();
+        } else {
+            self.statement();
+        }
+
+        if self.panic_mode {
+            self.synchronize();
+        }
+    }
+
+    fn statement(&mut self) {
+        if self.match_token_type(TokenType::Print) {
+            self.print_statement();
+        } else {
+            self.expression_statement();
+        }
+    }
 }
 
-fn unary(compiler: &mut Compiler) {
+fn unary(compiler: &mut Compiler, _can_assign: bool) {
     let token_type = unsafe { compiler.previous_token.assume_init_ref() }.kind;
     compiler.parse_precedence(Precedence::Unary);
 
     match token_type {
-        TokenType::Bang => compiler.emit_byte(OpCode::Not as u8),
-        TokenType::Minus => compiler.emit_byte(OpCode::Negate as u8),
+        TokenType::Bang => compiler.emit_opcode(OpCode::Not),
+        TokenType::Minus => compiler.emit_opcode(OpCode::Negate),
         _ => (),
     }
 }
@@ -257,55 +409,149 @@ fn binary(compiler: &mut Compiler) {
     compiler.parse_precedence(rule.2.next());
 
     match operator_type {
-        TokenType::BangEqual => compiler.emit_bytes(OpCode::Equal as u8, OpCode::Not as u8), // todo optimize
-        TokenType::EqualEqual => compiler.emit_byte(OpCode::Equal as u8),
-        TokenType::Greater => compiler.emit_byte(OpCode::Greater as u8),
-        TokenType::GreaterEqual => compiler.emit_bytes(OpCode::Less as u8, OpCode::Not as u8),
-        TokenType::Less => compiler.emit_byte(OpCode::Less as u8),
-        TokenType::LessEqual => compiler.emit_bytes(OpCode::Greater as u8, OpCode::Not as u8),
-        TokenType::Minus => compiler.emit_byte(OpCode::Subtract as u8),
-        TokenType::Plus => compiler.emit_byte(OpCode::Add as u8),
-        TokenType::Slash => compiler.emit_byte(OpCode::Divide as u8),
-        TokenType::Star => compiler.emit_byte(OpCode::Multiply as u8),
+        TokenType::BangEqual => compiler.emit_opcodes(OpCode::Equal, OpCode::Not), // todo optimize?
+        TokenType::EqualEqual => compiler.emit_opcode(OpCode::Equal),
+        TokenType::Greater => compiler.emit_opcode(OpCode::Greater),
+        TokenType::GreaterEqual => compiler.emit_opcodes(OpCode::Less, OpCode::Not),
+        TokenType::Less => compiler.emit_opcode(OpCode::Less),
+        TokenType::LessEqual => compiler.emit_opcodes(OpCode::Greater, OpCode::Not),
+        TokenType::Minus => compiler.emit_opcode(OpCode::Subtract),
+        TokenType::Plus => compiler.emit_opcode(OpCode::Add),
+        TokenType::Slash => compiler.emit_opcode(OpCode::Divide),
+        TokenType::Star => compiler.emit_opcode(OpCode::Multiply),
         _ => (),
     }
 }
 
-fn literal(compiler: &mut Compiler) {
+fn literal(compiler: &mut Compiler, _can_assign: bool) {
     match unsafe { compiler.previous_token.assume_init_ref() }.kind {
-        TokenType::False => compiler.emit_byte(OpCode::False as u8),
-        TokenType::Nil => compiler.emit_byte(OpCode::Nil as u8),
-        TokenType::True => compiler.emit_byte(OpCode::True as u8),
+        TokenType::False => compiler.emit_opcode(OpCode::False),
+        TokenType::Nil => compiler.emit_opcode(OpCode::Nil),
+        TokenType::True => compiler.emit_opcode(OpCode::True),
         _ => (),
     }
 }
 
-fn grouping(compiler: &mut Compiler) {
+fn grouping(compiler: &mut Compiler, _can_assign: bool) {
     compiler.expression();
     compiler.consume(TokenType::RightParen, "Expect ')' after expression.")
 }
 
-fn number(compiler: &mut Compiler) {
+fn number(compiler: &mut Compiler, _can_assign: bool) {
     let prev = unsafe { compiler.previous_token.assume_init_ref() };
     let ln = prev.line;
     let number = prev.lexeme.parse::<f64>().unwrap();
 
-    compiler.emit_constant(Value::from_number(number), ln);
+    compiler
+        .chunk
+        .write_constant(Value::from_number(number), ln);
 }
 
-fn string(compiler: &mut Compiler) {
+fn string(compiler: &mut Compiler, _can_assign: bool) {
     let prev = unsafe { compiler.previous_token.assume_init_ref() };
     let ln = prev.line;
 
     let slice = &prev.lexeme[1..prev.lexeme.len() - 1];
-    let rlox_boxed_string = ObjString::copy_string(slice, &mut compiler.string_cache);
-    let rlox_value = Value::from_obj(Obj::String(rlox_boxed_string));
-    compiler.emit_constant(rlox_value, ln);
+    let rlox_string = ObjString::copy_string_interned(slice, &mut compiler.string_cache);
+    let rlox_value = Value::from_obj(Obj::String(rlox_string));
+    compiler.chunk.write_constant(rlox_value, ln);
+}
+
+fn variable(compiler: &mut Compiler, can_assign: bool) {
+    named_variable(compiler, can_assign);
+}
+
+fn named_variable(compiler: &mut Compiler, can_assign: bool) {
+    let idx = compiler.identifier_constant(TokenPosition::Previous);
+    let is_assignment = can_assign && compiler.match_token_type(TokenType::Equal);
+
+    if idx <= u8::MAX as InstructionIndex {
+        if is_assignment {
+            compiler.expression();
+            compiler.emit_bytes(OpCode::SetGlobal as u8, idx as u8);
+        } else {
+            compiler.emit_bytes(OpCode::GetGlobal as u8, idx as u8);
+        }
+    } else {
+        if is_assignment {
+            compiler.expression();
+            compiler.emit_opcode(OpCode::SetGlobalLong);
+        } else {
+            compiler.emit_opcode(OpCode::GetGlobalLong);
+        }
+
+        match idx.to_most_significant_le_bytes() {
+            Ok(bytes) => bytes.iter().for_each(|b| compiler.emit_byte(*b)),
+            Err(msg) => compiler.error(msg),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compile_with_global_variables() {
+        let source = String::from("var beverage = \"cafe au lait\";\nvar breakfast = \"beignets with \" + beverage;\nprint breakfast;");
+        let mut chunk = Chunk::new();
+        let mut compiler = Compiler::new(Scanner::new(source), &mut chunk);
+
+        assert!(compiler.compile());
+
+        let expected_constants = vec![
+            Value::from_obj(Obj::String(ObjString::new_interned(
+                String::from("beverage"),
+                &mut compiler.string_cache,
+            ))),
+            Value::from_obj(Obj::String(ObjString::new_interned(
+                String::from("cafe au lait"),
+                &mut compiler.string_cache,
+            ))),
+            Value::from_obj(Obj::String(ObjString::new_interned(
+                String::from("breakfast"),
+                &mut compiler.string_cache,
+            ))),
+            Value::from_obj(Obj::String(ObjString::new_interned(
+                String::from("beignets with "),
+                &mut compiler.string_cache,
+            ))),
+            Value::from_obj(Obj::String(ObjString::new_interned(
+                String::from("beverage"),
+                &mut compiler.string_cache,
+            ))),
+            Value::from_obj(Obj::String(ObjString::new_interned(
+                String::from("breakfast"),
+                &mut compiler.string_cache,
+            ))),
+        ];
+
+        assert_eq!(expected_constants.len(), chunk.constants.len());
+        expected_constants
+            .iter()
+            .all(|expected_element| chunk.constants.contains(expected_element));
+
+        assert_eq!(
+            chunk.code,
+            vec![
+                OpCode::Constant as u8,
+                1u8, // stack.push('cafe au lait')
+                OpCode::DefineGlobal as u8,
+                0u8, // constants[0] = 'beverage', globals['beverage'] = 'cafe au lait'
+                OpCode::Constant as u8,
+                3u8, // constants[3] = 'beignets with '
+                OpCode::GetGlobal as u8,
+                4u8,               // stack.push(globals['beverage'])
+                OpCode::Add as u8, // stack.push(stack.pop() + stack.pop())
+                OpCode::DefineGlobal as u8,
+                2u8, // constants[2] = 'breakfast', globals['breakfast'] = 'beignets with cafe au lait'
+                OpCode::GetGlobal as u8,
+                5u8,                 // stack.push(globals['breakfast'])
+                OpCode::Print as u8, // print stack.pop() -> 'beignets with cafe au lait'
+                OpCode::Return as u8,
+            ]
+        );
+    }
 
     #[test]
     fn compile_numeric_binary_unary() {
@@ -346,5 +592,14 @@ mod tests {
                 OpCode::Return as u8,
             ]
         );
+    }
+
+    #[test]
+    fn invalid_assignment_target() {
+        let source = String::from("a * b = c + d;");
+        let mut chunk = Chunk::new();
+        let mut compiler = Compiler::new(Scanner::new(source), &mut chunk);
+
+        debug_assert!(!compiler.compile())
     }
 }

@@ -1,16 +1,18 @@
 #[cfg(feature = "rlox_debug")]
 use crate::debug::disassemble_instruction;
 
-use crate::object::{value_as_rlox_string, Obj, ObjString};
+use crate::object::{value_as_rlox_string_ref, Obj, ObjString};
 use crate::value::{as_bool, as_number, print_value, Value};
 use crate::{Chunk, Compiler, OpCode};
 
+use crate::chunk::{InstructionIndex, InstructionIndexConverter};
 use crate::scanner::Scanner;
-use crate::stack::Stack;
+use crate::stack::UnsafeStack;
 use crate::table::Table;
 use std::ptr;
 
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
+#[derive(PartialEq)]
 pub enum InterpretResult {
     Ok,
     CompileError,
@@ -20,16 +22,18 @@ pub enum InterpretResult {
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
 pub struct VM {
     ip: *mut u8,
-    stack: Stack<Value, 256>,
+    stack: UnsafeStack<Value, 256>,
+    globals: Table<ObjString, Value>,
     strings: Table<ObjString, Value>,
 }
 
 impl VM {
-    pub fn new(string_cache: Table<ObjString, Value>) -> Self {
+    pub fn new(strings: Table<ObjString, Value>) -> Self {
         Self {
             ip: ptr::null_mut(),
-            stack: Stack::new(),
-            strings: string_cache,
+            stack: UnsafeStack::new(),
+            globals: Table::new(),
+            strings,
         }
     }
 
@@ -50,20 +54,6 @@ impl VM {
 
         loop {
             if cfg!(feature = "rlox_debug") {
-                // Stack tracking
-                print!("          ");
-                for sp in 0..self.stack.len() {
-                    print!("[ ");
-                    match self.stack.peek(sp) {
-                        Some(elem) => {
-                            print_value(elem);
-                        }
-                        None => (),
-                    }
-                    print!(" ]");
-                }
-                println!();
-
                 // Disassemble current instruction
                 let offset = VM::get_offset(chunk, self.ip);
                 disassemble_instruction(chunk, offset);
@@ -98,6 +88,28 @@ impl VM {
                     let value = chunk.read_constant(self.read_long_constant_index());
                     self.stack.push(value);
                 }
+                OpCode::DefineGlobal => {
+                    // Note: the clox implementation pop()'s the value off of the stack
+                    // _after_ inserting it on the stack (using peek(0)).
+                    // This is to support a triggered garbage collection while interning the string.
+                    // In rlox we hope to prevent the need for a GC due to rusts'
+                    // memory model characteristics.
+                    let value = self.stack.pop().unwrap();
+                    let var_name: ObjString = self.read_constant_string(chunk, false).clone();
+
+                    self.globals.insert(var_name, value);
+                }
+                OpCode::DefineGlobalLong => {
+                    // Note: the clox implementation pop()'s the value off of the stack
+                    // _after_ inserting it on the stack (using peek(0)).
+                    // This is to support a triggered garbage collection while interning the string.
+                    // In rlox we hope to prevent the need for a GC due to rusts'
+                    // memory model characteristics.
+                    let value = self.stack.pop().unwrap();
+                    let var_name: ObjString = self.read_constant_string(chunk, true).clone();
+
+                    self.globals.insert(var_name, value);
+                }
                 OpCode::Divide => {
                     if self.validate_two_operands(
                         chunk,
@@ -117,6 +129,16 @@ impl VM {
                     self.stack.push(result);
                 }
                 OpCode::False => self.stack.push(Value::from_bool(false)),
+                OpCode::GetGlobal => {
+                    if !self.op_get_global(chunk, false) {
+                        return InterpretResult::RuntimeError;
+                    }
+                }
+                OpCode::GetGlobalLong => {
+                    if !self.op_get_global(chunk, true) {
+                        return InterpretResult::RuntimeError;
+                    }
+                }
                 OpCode::Greater => {
                     if self.validate_two_operands(
                         chunk,
@@ -165,19 +187,43 @@ impl VM {
                     Some(elem) => self.stack.push(Value::from_bool(Self::is_falsey(&elem))),
                     None => (),
                 },
-                OpCode::Return => match self.stack.pop() {
+                OpCode::Pop => {
+                    self.stack.pop().unwrap();
+                }
+                OpCode::Print => match self.stack.pop() {
                     Some(elem) => {
                         print_value(&elem);
                         println!();
-                        return InterpretResult::Ok;
                     }
-                    None => panic!("StackUnderFlow"),
+                    None => {
+                        self.runtime_error(chunk, "No operand to print");
+                        return InterpretResult::RuntimeError;
+                    }
                 },
+                OpCode::Return => {
+                    // Exit rlox interpreter
+                    return InterpretResult::Ok;
+                }
+                OpCode::SetGlobal => {
+                    if !self.op_set_global(chunk, false) {
+                        return InterpretResult::RuntimeError;
+                    }
+                }
+                OpCode::SetGlobalLong => {
+                    if !self.op_set_global(chunk, true) {
+                        return InterpretResult::RuntimeError;
+                    }
+                }
                 OpCode::Subtract => {
                     self.op_subtract();
                 }
                 OpCode::True => self.stack.push(Value::from_bool(true)),
             };
+
+            if cfg!(feature = "rlox_debug") {
+                // Stack tracking
+                println!("Stack: {:?}", self.stack)
+            }
         }
     }
 
@@ -206,9 +252,9 @@ impl VM {
         let rhs = self.stack.pop();
         let lhs = self.stack.pop();
         if let (Some(y), Some(x)) = (rhs, lhs) {
-            let concatenated = ObjString::add(
-                value_as_rlox_string(x),
-                value_as_rlox_string(y),
+            let concatenated = ObjString::add_interned(
+                &value_as_rlox_string_ref(x),
+                &value_as_rlox_string_ref(y),
                 &mut self.strings,
             );
             self.stack.push(Value::from_obj(Obj::String(concatenated)))
@@ -218,7 +264,10 @@ impl VM {
     fn type_check_two_operands(&mut self, validator: fn(&Value) -> bool) -> bool {
         match self.stack.peek(0) {
             Some(rhs) => match self.stack.peek(1) {
-                Some(lhs) => validator(lhs) && validator(rhs),
+                Some(lhs) => {
+                    // comment
+                    validator(lhs) && validator(rhs)
+                }
                 None => false,
             },
             None => false,
@@ -246,6 +295,18 @@ impl VM {
         eprintln!("[line {}] in script", line.no);
 
         self.stack.reset();
+    }
+
+    fn read_constant_string(&mut self, chunk: &mut Chunk, long_constant: bool) -> &ObjString {
+        let value = unsafe {
+            if long_constant {
+                chunk.read_constant(self.read_long_constant_index())
+            } else {
+                chunk.read_constant(self.read_byte() as InstructionIndex)
+            }
+        };
+
+        value_as_rlox_string_ref(value)
     }
 
     #[inline(always)]
@@ -296,6 +357,37 @@ impl VM {
         self.stack.push(result);
     }
 
+    fn op_get_global(&mut self, chunk: &mut Chunk, long_global: bool) -> bool {
+        let var_name = self.read_constant_string(chunk, long_global).clone();
+        match self.globals.get(&var_name) {
+            Some(value) => {
+                // TODO can value be cloned here?
+                self.stack.push(value.clone());
+                true
+            }
+            None => {
+                self.runtime_error(chunk, &format!("Undefined variable '{}'.", var_name.data));
+                false
+            }
+        }
+    }
+
+    fn op_set_global(&mut self, chunk: &mut Chunk, long_global: bool) -> bool {
+        let var_name = self.read_constant_string(chunk, long_global).clone();
+
+        match self.globals.get(&var_name) {
+            Some(_) => {
+                let value = self.stack.peek(0).unwrap().clone();
+                self.globals.insert(var_name, value);
+                true
+            }
+            None => {
+                self.runtime_error(chunk, &format!("Undefined variable '{}'.", &var_name.data));
+                false
+            }
+        }
+    }
+
     #[inline(always)]
     unsafe fn read_byte(&mut self) -> u8 {
         let byte = *self.ip;
@@ -304,19 +396,12 @@ impl VM {
         byte
     }
 
-    unsafe fn read_long_constant_index(&mut self) -> usize {
-        let le_bytes = [
+    unsafe fn read_long_constant_index(&mut self) -> InstructionIndex {
+        InstructionIndex::from_most_significant_le_bytes([
             self.read_byte(),
             self.read_byte(),
             self.read_byte(),
-            0,
-            0,
-            0,
-            0,
-            0,
-        ];
-
-        usize::from_le_bytes(le_bytes)
+        ])
     }
 
     #[inline(always)]
@@ -332,51 +417,39 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore] // return statements do not yet work
-    fn interpret_test_chunk() {
-        let source = String::from("return -((1.2 + 3.4) / 5.6)");
-        let mut chunk = Chunk::new();
-
-        let mut compiler = Compiler::new(Scanner::new(source), &mut chunk);
-        assert!(compiler.compile());
-
-        let mut vm = VM::new(Table::from(compiler.string_cache()));
-        unsafe { vm.run(&mut chunk) };
-    }
-
-    #[test]
     fn interpret_numeric_expr() {
-        let source = String::from("!(5 - 4 > 3 * 2 == !nil)");
-        let mut chunk = Chunk::new();
-
-        let mut compiler = Compiler::new(Scanner::new(source), &mut chunk);
-        assert!(compiler.compile());
-
-        let mut vm = VM::new(Table::from(compiler.string_cache()));
-        unsafe { vm.run(&mut chunk) };
+        let source = String::from("!(5 - 4 > 3 * 2 == !nil);");
+        assert_eq!(VM::interpret(source), InterpretResult::Ok);
     }
 
     #[test]
     fn interpret_string_concatenation() {
-        let source = String::from("\"st\" + \"ri\" + \"ng\"");
-        let mut chunk = Chunk::new();
-
-        let mut compiler = Compiler::new(Scanner::new(source), &mut chunk);
-        assert!(compiler.compile());
-
-        let mut vm = VM::new(Table::from(compiler.string_cache()));
-        unsafe { vm.run(&mut chunk) };
+        let source = String::from("\"st\" + \"ri\" + \"ng\";");
+        assert_eq!(VM::interpret(source), InterpretResult::Ok);
     }
 
     #[test]
     fn interpret_string() {
-        let source = String::from("\"abc\" == \"abc\"");
-        let mut chunk = Chunk::new();
+        let source = String::from("var x = \"abc\" + \"def\"; print x;");
+        assert_eq!(VM::interpret(source), InterpretResult::Ok);
+    }
 
-        let mut compiler = Compiler::new(Scanner::new(source), &mut chunk);
-        assert!(compiler.compile());
+    #[test]
+    fn interpret_print_statement() {
+        let source = String::from("print 1 + 2;");
+        assert_eq!(VM::interpret(source), InterpretResult::Ok);
+    }
 
-        let mut vm = VM::new(Table::from(compiler.string_cache()));
-        unsafe { vm.run(&mut chunk) };
+    #[test]
+    fn interpret_global_variable_access() {
+        let source = String::from("var beverage = \"cafe au lait\";\nvar breakfast = \"beignets with \" + beverage;\nprint breakfast;");
+        assert_eq!(VM::interpret(source), InterpretResult::Ok);
+    }
+
+    #[test]
+    fn interpret_global_variable_assignment() {
+        let source = String::from(
+            "var breakfast = \"beignets\";\nvar beverage = \"cafe au lait\";\nbreakfast = \"beignets with \" + beverage;\nprint breakfast;");
+        assert_eq!(VM::interpret(source), InterpretResult::Ok);
     }
 }

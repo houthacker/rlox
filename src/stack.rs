@@ -1,17 +1,19 @@
+use crate::value::Value;
 use std::alloc::Layout;
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
-use std::ptr;
-use std::ptr::NonNull;
 
-pub struct Stack<T, const SIZE: usize> {
+use std::ptr::NonNull;
+use std::{mem, ptr};
+
+pub struct UnsafeStack<T, const SIZE: usize> {
     ptr: NonNull<T>,
     max_offset: usize,
     top_offset: usize,
     _marker: PhantomData<T>,
 }
 
-impl<T, const SIZE: usize> Stack<T, SIZE> {
+impl<T, const SIZE: usize> UnsafeStack<T, SIZE> {
     pub fn new() -> Self {
         Self {
             ptr: Self::allocate(),
@@ -45,7 +47,7 @@ impl<T, const SIZE: usize> Stack<T, SIZE> {
     }
 
     pub fn peek(&self, distance: usize) -> Option<&T> {
-        if self.top_offset <= 1 {
+        if self.top_offset == 0 {
             None
         } else {
             unsafe {
@@ -62,7 +64,7 @@ impl<T, const SIZE: usize> Stack<T, SIZE> {
             let ptr = self.ptr.as_ptr().add(self.top_offset);
 
             let old_value = ptr::read(ptr);
-            if std::mem::needs_drop::<T>() {
+            if mem::needs_drop::<T>() {
                 drop(old_value);
             }
 
@@ -85,7 +87,7 @@ impl<T, const SIZE: usize> Stack<T, SIZE> {
     }
 }
 
-impl<T, const SIZE: usize> Drop for Stack<T, SIZE> {
+impl<T, const SIZE: usize> Drop for UnsafeStack<T, SIZE> {
     fn drop(&mut self) {
         let layout = Layout::array::<T>(SIZE).unwrap();
         unsafe {
@@ -94,9 +96,36 @@ impl<T, const SIZE: usize> Drop for Stack<T, SIZE> {
     }
 }
 
-impl<T, const SIZE: usize> Debug for Stack<T, SIZE> {
-    fn fmt(&self, _f: &mut Formatter<'_>) -> std::fmt::Result {
-        // TODO
-        Ok(())
+impl<const SIZE: usize> Debug for UnsafeStack<Value, SIZE> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        // Stack tracking
+        let mut format = String::from("          ");
+
+        format.push_str("[ ");
+        for sp in 0..self.len() {
+            match self.peek(sp) {
+                Some(elem) => match elem {
+                    Value::Nil() => format.push_str("nil"),
+                    Value::Boolean(b) => format.push_str(&b.to_string()),
+                    Value::Number(n) => format.push_str(&n.to_string()),
+                    Value::Obj(obj) => format.push_str(&format!("'{}'", obj)),
+                },
+                None => (),
+            }
+
+            if sp < self.len() - 1 {
+                format.push_str(", ");
+            }
+        }
+
+        format.push_str(" ]");
+        format.push('\n');
+
+        f.write_str(&format)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
 }
