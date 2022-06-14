@@ -46,6 +46,17 @@ impl<T, const SIZE: usize> UnsafeStack<T, SIZE> {
         }
     }
 
+    pub fn popn(&mut self, n: usize) -> bool {
+        if n == 0 || n > self.top_offset + 1 {
+            false
+        } else {
+            (0..n).for_each(|_| {
+                self.pop();
+            });
+            true
+        }
+    }
+
     pub fn peek(&self, distance: usize) -> Option<&T> {
         if self.top_offset == 0 {
             None
@@ -59,17 +70,23 @@ impl<T, const SIZE: usize> UnsafeStack<T, SIZE> {
         }
     }
 
-    pub fn replace_top(&mut self, value: T) {
-        unsafe {
-            let ptr = self.ptr.as_ptr().add(self.top_offset);
+    pub unsafe fn get_at_unchecked(&self, index: usize) -> &T {
+        self.ptr.as_ptr().add(index).as_ref().unwrap_unchecked()
+    }
 
-            let old_value = ptr::read(ptr);
-            if mem::needs_drop::<T>() {
-                drop(old_value);
-            }
+    pub unsafe fn set_at_unchecked(&mut self, index: usize, value: T) {
+        let ptr = self.ptr.as_ptr().add(index);
 
-            ptr::write(ptr, value);
+        let old_value = ptr::read(ptr);
+        if mem::needs_drop::<T>() {
+            drop(old_value);
         }
+
+        ptr::write(ptr, value);
+    }
+
+    pub unsafe fn replace_top(&mut self, value: T) {
+        self.set_at_unchecked(self.top_offset, value)
     }
 
     pub fn reset(&mut self) {

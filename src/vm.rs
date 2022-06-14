@@ -85,7 +85,7 @@ impl VM {
                     self.stack.push(value);
                 }
                 OpCode::ConstantLong => {
-                    let value = chunk.read_constant(self.read_long_constant_index());
+                    let value = chunk.read_constant(self.read_long_index());
                     self.stack.push(value);
                 }
                 OpCode::DefineGlobal => {
@@ -139,6 +139,10 @@ impl VM {
                         return InterpretResult::RuntimeError;
                     }
                 }
+                OpCode::GetLocal => {
+                    self.op_get_local(false);
+                }
+                OpCode::GetLocalLong => self.op_get_local(true),
                 OpCode::Greater => {
                     if self.validate_two_operands(
                         chunk,
@@ -190,6 +194,10 @@ impl VM {
                 OpCode::Pop => {
                     self.stack.pop().unwrap();
                 }
+                OpCode::PopN => {
+                    let n = self.read_byte();
+                    self.stack.popn(n as usize);
+                }
                 OpCode::Print => match self.stack.pop() {
                     Some(elem) => {
                         print_value(&elem);
@@ -214,6 +222,8 @@ impl VM {
                         return InterpretResult::RuntimeError;
                     }
                 }
+                OpCode::SetLocal => self.op_set_local(false),
+                OpCode::SetLocalLong => self.op_set_local(true),
                 OpCode::Subtract => {
                     self.op_subtract();
                 }
@@ -238,7 +248,7 @@ impl VM {
         match self.stack.peek(0) {
             Some(elem) => {
                 let replacement = Value::from_number(-as_number(elem));
-                self.stack.replace_top(replacement);
+                unsafe { self.stack.replace_top(replacement) };
             }
             None => (),
         }
@@ -300,7 +310,7 @@ impl VM {
     fn read_constant_string(&mut self, chunk: &mut Chunk, long_constant: bool) -> &ObjString {
         let value = unsafe {
             if long_constant {
-                chunk.read_constant(self.read_long_constant_index())
+                chunk.read_constant(self.read_long_index())
             } else {
                 chunk.read_constant(self.read_byte() as InstructionIndex)
             }
@@ -357,6 +367,32 @@ impl VM {
         self.stack.push(result);
     }
 
+    fn op_get_local(&mut self, long_local: bool) {
+        let idx = unsafe {
+            if long_local {
+                self.read_long_index()
+            } else {
+                self.read_byte() as InstructionIndex
+            }
+        };
+
+        let value = unsafe { self.stack.get_at_unchecked(idx).clone() };
+        self.stack.push(value);
+    }
+
+    fn op_set_local(&mut self, long_local: bool) {
+        let slot = unsafe {
+            if long_local {
+                self.read_long_index()
+            } else {
+                self.read_byte() as InstructionIndex
+            }
+        };
+
+        let value = self.stack.peek(0).unwrap().clone();
+        unsafe { self.stack.set_at_unchecked(slot, value) };
+    }
+
     fn op_get_global(&mut self, chunk: &mut Chunk, long_global: bool) -> bool {
         let var_name = self.read_constant_string(chunk, long_global).clone();
         match self.globals.get(&var_name) {
@@ -396,7 +432,7 @@ impl VM {
         byte
     }
 
-    unsafe fn read_long_constant_index(&mut self) -> InstructionIndex {
+    unsafe fn read_long_index(&mut self) -> InstructionIndex {
         InstructionIndex::from_most_significant_le_bytes([
             self.read_byte(),
             self.read_byte(),
@@ -450,6 +486,12 @@ mod tests {
     fn interpret_global_variable_assignment() {
         let source = String::from(
             "var breakfast = \"beignets\";\nvar beverage = \"cafe au lait\";\nbreakfast = \"beignets with \" + beverage;\nprint breakfast;");
+        assert_eq!(VM::interpret(source), InterpretResult::Ok);
+    }
+
+    #[test]
+    fn print_local_variable() {
+        let source = String::from("{ var cup; print cup;}");
         assert_eq!(VM::interpret(source), InterpretResult::Ok);
     }
 }

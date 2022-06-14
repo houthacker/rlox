@@ -6,6 +6,8 @@ statement -> exprStmt
     | whileStmt
     | block ;
 
+block -> "{" declaration* "}" ;
+
 declaration ->classDecl
     | funDecl
     | varDecl
