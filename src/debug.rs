@@ -1,4 +1,4 @@
-use crate::chunk::InstructionIndex;
+use crate::chunk::{InstructionIndex, InstructionIndexConverter};
 use crate::value::print_value;
 use crate::{Chunk, OpCode};
 
@@ -48,6 +48,15 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: InstructionIndex) -> Instr
         Ok(OpCode::SetGlobalLong) => {
             constant_long_instruction(&OpCode::SetGlobalLong.to_string(), chunk, offset)
         }
+        Ok(OpCode::GetLocal) => byte_instruction(&OpCode::GetLocal.to_string(), chunk, offset),
+        Ok(OpCode::GetLocalLong) => {
+            byte_long_instruction(&OpCode::GetLocal.to_string(), chunk, offset)
+        }
+        Ok(OpCode::SetLocal) => byte_instruction(&OpCode::GetLocal.to_string(), chunk, offset),
+        Ok(OpCode::SetLocalLong) => {
+            byte_long_instruction(&OpCode::GetLocal.to_string(), chunk, offset)
+        }
+        Ok(OpCode::PopN) => byte_instruction(&OpCode::PopN.to_string(), chunk, offset),
         Ok(opcode) => simple_instruction(&opcode.to_string(), offset),
         Err(msg) => {
             println!("{} {}", msg, instruction);
@@ -61,6 +70,22 @@ fn simple_instruction(name: &str, offset: usize) -> usize {
     offset + 1
 }
 
+fn byte_instruction(name: &str, chunk: &Chunk, offset: InstructionIndex) -> InstructionIndex {
+    let slot = chunk.code[offset + 1];
+    println!("{:-16} {:4}", name, slot);
+    offset + 2
+}
+
+fn byte_long_instruction(name: &str, chunk: &Chunk, offset: InstructionIndex) -> InstructionIndex {
+    let slot = InstructionIndex::from_most_significant_le_bytes([
+        chunk.code[offset + 1],
+        chunk.code[offset + 2],
+        chunk.code[offset + 3],
+    ]);
+    println!("{:-16} {:4}", name, slot);
+    offset + 4
+}
+
 fn constant_instruction(name: &str, chunk: &Chunk, offset: InstructionIndex) -> InstructionIndex {
     // Retrieve the index of the constant value (offset + 0 is OpCode::OpConstant)
     print_constant(name, chunk.code[offset + 1] as usize, chunk);
@@ -72,17 +97,11 @@ fn constant_long_instruction(
     chunk: &Chunk,
     offset: InstructionIndex,
 ) -> InstructionIndex {
-    let le_bytes = [
+    let idx = InstructionIndex::from_most_significant_le_bytes([
         chunk.code[offset + 1],
         chunk.code[offset + 2],
         chunk.code[offset + 3],
-        0,
-        0,
-        0,
-        0,
-        0,
-    ];
-    let idx = usize::from_le_bytes(le_bytes);
+    ]);
     print_constant(name, idx, chunk);
 
     offset + 4

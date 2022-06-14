@@ -32,6 +32,7 @@ impl InstructionIndexConverter for InstructionIndex {
 
 /// bytecode instructions for the rlox VM
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
+#[derive(PartialEq)]
 pub enum OpCode {
     Add = 0,
     Constant = 1,
@@ -43,19 +44,40 @@ pub enum OpCode {
     False = 7,
     GetGlobal = 8,
     GetGlobalLong = 9,
-    Greater = 10,
-    Less = 11,
-    Multiply = 12,
-    Negate = 13,
-    Nil = 14,
-    Not = 15,
-    Pop = 16,
-    Print = 17,
-    Return = 18,
-    SetGlobal = 19,
-    SetGlobalLong = 20,
-    Subtract = 21,
-    True = 22,
+    GetLocal = 10,
+    GetLocalLong = 11,
+    Greater = 12,
+    Less = 13,
+    Multiply = 14,
+    Negate = 15,
+    Nil = 16,
+    Not = 17,
+    Pop = 18,
+    PopN = 19,
+    Print = 20,
+    Return = 21,
+    SetGlobal = 22,
+    SetGlobalLong = 23,
+    SetLocal = 24,
+    SetLocalLong = 25,
+    Subtract = 26,
+    True = 27,
+}
+
+impl OpCode {
+    pub fn is_long_discriminant(&self) -> bool {
+        use OpCode::*;
+
+        matches!(
+            self,
+            ConstantLong
+                | DefineGlobalLong
+                | GetGlobalLong
+                | GetLocalLong
+                | SetGlobalLong
+                | SetLocalLong
+        )
+    }
 }
 
 impl Display for OpCode {
@@ -79,19 +101,24 @@ impl TryFrom<u8> for OpCode {
             7 => Ok(OpCode::False),
             8 => Ok(OpCode::GetGlobal),
             9 => Ok(OpCode::GetGlobalLong),
-            10 => Ok(OpCode::Greater),
-            11 => Ok(OpCode::Less),
-            12 => Ok(OpCode::Multiply),
-            13 => Ok(OpCode::Negate),
-            14 => Ok(OpCode::Nil),
-            15 => Ok(OpCode::Not),
-            16 => Ok(OpCode::Pop),
-            17 => Ok(OpCode::Print),
-            18 => Ok(OpCode::Return),
-            19 => Ok(OpCode::SetGlobal),
-            20 => Ok(OpCode::SetGlobalLong),
-            21 => Ok(OpCode::Subtract),
-            22 => Ok(OpCode::True),
+            10 => Ok(OpCode::GetLocal),
+            11 => Ok(OpCode::GetLocalLong),
+            12 => Ok(OpCode::Greater),
+            13 => Ok(OpCode::Less),
+            14 => Ok(OpCode::Multiply),
+            15 => Ok(OpCode::Negate),
+            16 => Ok(OpCode::Nil),
+            17 => Ok(OpCode::Not),
+            18 => Ok(OpCode::Pop),
+            19 => Ok(OpCode::PopN),
+            20 => Ok(OpCode::Print),
+            21 => Ok(OpCode::Return),
+            22 => Ok(OpCode::SetGlobal),
+            23 => Ok(OpCode::SetGlobalLong),
+            24 => Ok(OpCode::SetLocal),
+            25 => Ok(OpCode::SetLocalLong),
+            26 => Ok(OpCode::Subtract),
+            27 => Ok(OpCode::True),
             _ => Err("Unknown OpCode"),
         }
     }
