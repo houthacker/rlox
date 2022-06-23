@@ -1,4 +1,4 @@
-use crate::chunk::{InstructionIndex, InstructionIndexConverter};
+use crate::chunk::{IndexConverter, InstructionIndex};
 use crate::value::print_value;
 use crate::{Chunk, OpCode};
 
@@ -42,6 +42,11 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: InstructionIndex) -> Instr
         Ok(OpCode::GetGlobalLong) => {
             constant_long_instruction(&OpCode::GetGlobalLong.to_string(), chunk, offset)
         }
+        Ok(OpCode::Jump) => jump_instruction(&OpCode::Jump.to_string(), 1, chunk, offset),
+        Ok(OpCode::JumpIfFalse) => {
+            jump_instruction(&OpCode::JumpIfFalse.to_string(), 1, chunk, offset)
+        }
+        Ok(OpCode::Loop) => jump_instruction(&OpCode::Loop.to_string(), -1, chunk, offset),
         Ok(OpCode::SetGlobal) => {
             constant_instruction(&OpCode::SetGlobal.to_string(), chunk, offset)
         }
@@ -76,8 +81,29 @@ fn byte_instruction(name: &str, chunk: &Chunk, offset: InstructionIndex) -> Inst
     offset + 2
 }
 
+fn jump_instruction(
+    name: &str,
+    sign: isize,
+    chunk: &Chunk,
+    offset: InstructionIndex,
+) -> InstructionIndex {
+    let mut jump = (chunk.code[offset + 1] as u16) << 8u16;
+    jump |= chunk.code[offset + 2] as u16;
+
+    let addend = 3 + sign * (jump as isize);
+    let loc = if addend >= 0 {
+        offset + (addend as usize)
+    } else {
+        offset - (-addend as usize)
+    };
+
+    println!("{:-16} {:4} -> {}", name, offset, loc);
+
+    offset + 3
+}
+
 fn byte_long_instruction(name: &str, chunk: &Chunk, offset: InstructionIndex) -> InstructionIndex {
-    let slot = InstructionIndex::from_most_significant_le_bytes([
+    let slot = InstructionIndex::from_n_most_significant_le_bytes::<3>([
         chunk.code[offset + 1],
         chunk.code[offset + 2],
         chunk.code[offset + 3],
@@ -97,7 +123,7 @@ fn constant_long_instruction(
     chunk: &Chunk,
     offset: InstructionIndex,
 ) -> InstructionIndex {
-    let idx = InstructionIndex::from_most_significant_le_bytes([
+    let idx = InstructionIndex::from_n_most_significant_le_bytes::<3>([
         chunk.code[offset + 1],
         chunk.code[offset + 2],
         chunk.code[offset + 3],

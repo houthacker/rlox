@@ -143,6 +143,4 @@ impl<const SIZE: usize> Debug for UnsafeStack<Value, SIZE> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-}
+mod tests {}

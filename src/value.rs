@@ -134,6 +134,4 @@ pub fn print_value(value: &Value) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-}
+mod tests {}

@@ -1,18 +1,21 @@
 use crate::value::Value;
 use std::fmt::{Display, Formatter};
+use std::mem;
 
 pub type InstructionIndex = usize;
+pub type ConstantIndex = usize;
 pub type LineNumber = u32;
 
 /// rlox supports constant indexes up to 24 bits, so this conversion is used
 /// a lot in the rlox Compiler / VM
-pub trait InstructionIndexConverter {
-    fn to_most_significant_le_bytes(&self) -> Result<[u8; 3], &'static str>;
+pub trait IndexConverter {
+    fn to_n_most_significant_le_bytes<const N: usize>(&self) -> Result<[u8; N], &'static str>;
 
-    fn from_most_significant_le_bytes(data: [u8; 3]) -> InstructionIndex;
+    fn from_n_most_significant_le_bytes<const N: usize>(data: [u8; N]) -> Self;
 }
 
-impl InstructionIndexConverter for InstructionIndex {
+impl IndexConverter for usize {
+    /*
     fn to_most_significant_le_bytes(&self) -> Result<[u8; 3], &'static str> {
         let data = self.to_le_bytes();
 
@@ -24,10 +27,47 @@ impl InstructionIndexConverter for InstructionIndex {
             Ok([data[0], data[1], data[2]])
         }
     }
+    */
 
-    fn from_most_significant_le_bytes(data: [u8; 3]) -> InstructionIndex {
-        InstructionIndex::from_le_bytes([data[0], data[1], data[2], 0, 0, 0, 0, 0])
+    fn to_n_most_significant_le_bytes<const N: usize>(&self) -> Result<[u8; N], &'static str> {
+        if N > 8 {
+            return Err("N cannot be > 8");
+        }
+
+        let data: [u8; 8] = self.to_le_bytes();
+        let mut sum = 0usize;
+        data[N..8].iter().for_each(|b| sum += *b as usize);
+
+        // Ensure all bytes after data[N-1] are 0, since we don't want
+        // to lose any significance here. If so, we return Err
+        if sum != 0 {
+            Err("Cannot convert: only N most significant bits may be nonzero.")
+        } else {
+            let mut result = [0u8; N];
+            result.copy_from_slice(&data[..N]);
+
+            Ok(result)
+        }
     }
+
+    /*
+    fn from_most_significant_le_bytes(data: [u8; 3]) -> usize {
+        usize::from_le_bytes([data[0], data[1], data[2], 0, 0, 0, 0, 0])
+    }
+    */
+
+    fn from_n_most_significant_le_bytes<const N: usize>(data: [u8; N]) -> Self {
+        let mut le_bytes = [0u8; mem::size_of::<Self>()];
+        le_bytes.copy_from_slice(&data[..]);
+
+        Self::from_le_bytes(le_bytes)
+    }
+}
+
+pub enum PatchJumpResult {
+    OffsetOutOfCodeBounds,
+    OffsetTooLarge,
+    Ok,
 }
 
 /// bytecode instructions for the rlox VM
@@ -35,33 +75,36 @@ impl InstructionIndexConverter for InstructionIndex {
 #[derive(PartialEq)]
 pub enum OpCode {
     Add = 0,
-    Constant = 1,
-    ConstantLong = 2,
-    DefineGlobal = 3,
-    DefineGlobalLong = 4,
-    Divide = 5,
-    Equal = 6,
-    False = 7,
-    GetGlobal = 8,
-    GetGlobalLong = 9,
-    GetLocal = 10,
-    GetLocalLong = 11,
-    Greater = 12,
-    Less = 13,
-    Multiply = 14,
-    Negate = 15,
-    Nil = 16,
-    Not = 17,
-    Pop = 18,
-    PopN = 19,
-    Print = 20,
-    Return = 21,
-    SetGlobal = 22,
-    SetGlobalLong = 23,
-    SetLocal = 24,
-    SetLocalLong = 25,
-    Subtract = 26,
-    True = 27,
+    Constant,
+    ConstantLong,
+    DefineGlobal,
+    DefineGlobalLong,
+    Divide,
+    Equal,
+    False,
+    GetGlobal,
+    GetGlobalLong,
+    GetLocal,
+    GetLocalLong,
+    Greater,
+    Jump,
+    JumpIfFalse,
+    Less,
+    Loop,
+    Multiply,
+    Negate,
+    Nil,
+    Not,
+    Pop,
+    PopN,
+    Print,
+    Return,
+    SetGlobal,
+    SetGlobalLong,
+    SetLocal,
+    SetLocalLong,
+    Subtract,
+    True,
 }
 
 impl OpCode {
@@ -104,28 +147,31 @@ impl TryFrom<u8> for OpCode {
             10 => Ok(OpCode::GetLocal),
             11 => Ok(OpCode::GetLocalLong),
             12 => Ok(OpCode::Greater),
-            13 => Ok(OpCode::Less),
-            14 => Ok(OpCode::Multiply),
-            15 => Ok(OpCode::Negate),
-            16 => Ok(OpCode::Nil),
-            17 => Ok(OpCode::Not),
-            18 => Ok(OpCode::Pop),
-            19 => Ok(OpCode::PopN),
-            20 => Ok(OpCode::Print),
-            21 => Ok(OpCode::Return),
-            22 => Ok(OpCode::SetGlobal),
-            23 => Ok(OpCode::SetGlobalLong),
-            24 => Ok(OpCode::SetLocal),
-            25 => Ok(OpCode::SetLocalLong),
-            26 => Ok(OpCode::Subtract),
-            27 => Ok(OpCode::True),
+            13 => Ok(OpCode::Jump),
+            14 => Ok(OpCode::JumpIfFalse),
+            15 => Ok(OpCode::Less),
+            16 => Ok(OpCode::Loop),
+            17 => Ok(OpCode::Multiply),
+            18 => Ok(OpCode::Negate),
+            19 => Ok(OpCode::Nil),
+            20 => Ok(OpCode::Not),
+            21 => Ok(OpCode::Pop),
+            22 => Ok(OpCode::PopN),
+            23 => Ok(OpCode::Print),
+            24 => Ok(OpCode::Return),
+            25 => Ok(OpCode::SetGlobal),
+            26 => Ok(OpCode::SetGlobalLong),
+            27 => Ok(OpCode::SetLocal),
+            28 => Ok(OpCode::SetLocalLong),
+            29 => Ok(OpCode::Subtract),
+            30 => Ok(OpCode::True),
             _ => Err("Unknown OpCode"),
         }
     }
 }
 
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
-#[derive(Clone, PartialEq)]
+#[derive(Copy, Clone, PartialEq)]
 pub struct Line {
     pub no: LineNumber,
     pub references: usize,
@@ -165,16 +211,16 @@ impl Chunk {
     /// # Arguments
     /// * `value` - The constant value to write
     /// * `line` - The related source code line number  
-    pub fn write_constant(&mut self, value: Value, line: LineNumber) -> InstructionIndex {
+    pub fn write_constant(&mut self, value: Value, line: LineNumber) -> ConstantIndex {
         match self.add_constant(value) {
-            x if x <= u8::MAX as InstructionIndex => {
+            x if x <= u8::MAX as ConstantIndex => {
                 self.write(OpCode::Constant as u8, line);
                 self.write(x as u8, line);
                 x
             }
             x => {
                 self.write(OpCode::ConstantLong as u8, line);
-                match x.to_most_significant_le_bytes() {
+                match x.to_n_most_significant_le_bytes::<3>() {
                     Ok(bytes) => {
                         bytes.iter().for_each(|b| self.write(*b, line));
                         x
@@ -185,8 +231,27 @@ impl Chunk {
         }
     }
 
-    pub fn read_constant(&self, index: InstructionIndex) -> Value {
+    pub fn read_constant(&self, index: ConstantIndex) -> Value {
         self.constants[index].clone()
+    }
+
+    pub fn patch_jump(&mut self, offset: InstructionIndex) -> PatchJumpResult {
+        let len = self.code.len();
+
+        if offset > len + 2 {
+            PatchJumpResult::OffsetOutOfCodeBounds
+        } else {
+            // -2 to adjust for the bytecode for the jump offset itself.
+            let distance = self.code.len() - offset - 2;
+
+            if distance > u16::MAX as usize {
+                PatchJumpResult::OffsetTooLarge
+            } else {
+                self.code[offset] = ((distance >> 8) & 0xff) as u8;
+                self.code[offset + 1] = (distance & 0xff) as u8;
+                PatchJumpResult::Ok
+            }
+        }
     }
 
     /// Returns the source code line at which the given instruction
@@ -203,7 +268,7 @@ impl Chunk {
     // Adds the given value to the constant pool
     // of this chunk, and returns the index at which
     // it was added.
-    pub fn add_constant(&mut self, value: Value) -> InstructionIndex {
+    pub fn add_constant(&mut self, value: Value) -> ConstantIndex {
         self.constants.push(value);
         self.constants.len() - 1
     }
@@ -213,7 +278,7 @@ impl Chunk {
 
         for line in self.lines.iter() {
             if count <= line.references {
-                return Some(line.clone());
+                return Some(*line);
             }
 
             count -= line.references
