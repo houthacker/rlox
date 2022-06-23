@@ -1,4 +1,4 @@
-use crate::chunk::{InstructionIndex, InstructionIndexConverter};
+use crate::chunk::{IndexConverter, InstructionIndex};
 use std::alloc::Layout;
 
 #[cfg(feature = "rlox_debug")]
@@ -65,7 +65,6 @@ impl TryFrom<u8> for Precedence {
 }
 
 enum TokenPosition {
-    Current,
     Previous,
 }
 
@@ -108,18 +107,6 @@ const MAX_LOCALS: usize = u8::MAX as usize + 1usize;
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
 pub struct LocalsTracker {
     locals: NonNull<Local>,
-    count: usize,
-    scope_depth: isize,
-}
-
-impl LocalsTracker {
-    pub fn end_scope(&mut self) {
-        self.scope_depth -= 1;
-    }
-
-    pub fn is_in_local_scope(&self) -> bool {
-        self.scope_depth > 0
-    }
 }
 
 impl Drop for LocalsTracker {
@@ -176,6 +163,7 @@ impl<'a> Compiler<'a> {
         token_type: TokenType,
     ) -> ParseRule {
         match token_type {
+            TokenType::And          => ParseRule(None,          Some(and),      Precedence::And),
             TokenType::Bang         => ParseRule(Some(unary),   None,           Precedence::None),
             TokenType::BangEqual    => ParseRule(None,          Some(binary),   Precedence::Equality),
             TokenType::EqualEqual   => ParseRule(None,          Some(binary),   Precedence::Equality),
@@ -189,6 +177,7 @@ impl<'a> Compiler<'a> {
             TokenType::Minus        => ParseRule(Some(unary),   Some(binary),   Precedence::Term),
             TokenType::Nil          => ParseRule(Some(literal), None,           Precedence::None),
             TokenType::Number       => ParseRule(Some(number),  None,           Precedence::None),
+            TokenType::Or           => ParseRule(None,          Some(or),       Precedence::Or),
             TokenType::Plus         => ParseRule(None,          Some(binary),   Precedence::Term),
             TokenType::Slash        => ParseRule(None,          Some(binary),   Precedence::Factor),
             TokenType::Star         => ParseRule(None,          Some(binary),   Precedence::Factor),
@@ -305,6 +294,25 @@ impl<'a> Compiler<'a> {
         self.emit_byte(byte2);
     }
 
+    fn emit_loop(&mut self, loop_start: InstructionIndex) {
+        self.emit_opcode(OpCode::Loop);
+
+        let offset = self.chunk.code.len() - loop_start + 2;
+        if offset > u16::MAX as usize {
+            self.error("Loop body too large.");
+        }
+
+        self.emit_bytes(((offset >> 8) & 0xff) as u8, (offset & 0xff) as u8);
+    }
+
+    fn emit_jump(&mut self, instruction: OpCode) -> InstructionIndex {
+        self.emit_opcode(instruction);
+
+        // Allow for max 2^16-1 bytes between jumps.
+        self.emit_bytes(0xff, 0xff);
+        self.chunk.code.len() - 2
+    }
+
     fn emit_return(&mut self) {
         self.emit_opcode(OpCode::Return);
     }
@@ -339,8 +347,14 @@ impl<'a> Compiler<'a> {
             self.locals_count -= 1;
         }
 
-        // todo guard for overflow, implement popn_long
-        self.emit_bytes(OpCode::PopN as u8, pops);
+        if pops > 0 {
+            if pops == 1 {
+                self.emit_opcode(OpCode::Pop);
+            } else {
+                // todo guard for overflow, implement popn_long
+                self.emit_bytes(OpCode::PopN as u8, pops);
+            }
+        }
     }
 
     unsafe fn local_at(&self, index: usize) -> Option<&Local> {
@@ -383,7 +397,6 @@ impl<'a> Compiler<'a> {
 
     fn identifier_constant(&mut self, token_position: TokenPosition) -> InstructionIndex {
         let token = match token_position {
-            TokenPosition::Current => unsafe { self.current_token.assume_init_ref() },
             TokenPosition::Previous => unsafe { self.previous_token.assume_init_ref() },
         };
 
@@ -401,7 +414,6 @@ impl<'a> Compiler<'a> {
     fn add_local(&mut self, token_position: TokenPosition) {
         let name = match token_position {
             TokenPosition::Previous => unsafe { self.previous_token.assume_init_ref() },
-            TokenPosition::Current => unsafe { self.current_token.assume_init_ref() },
         };
 
         if self.locals_count == MAX_LOCALS {
@@ -421,7 +433,6 @@ impl<'a> Compiler<'a> {
     fn is_defined_in_scope(&self, token_position: TokenPosition) -> bool {
         let name = match token_position {
             TokenPosition::Previous => unsafe { self.previous_token.assume_init_ref() },
-            TokenPosition::Current => unsafe { self.current_token.assume_init_ref() },
         };
 
         for n in self.locals_count..0 {
@@ -485,7 +496,7 @@ impl<'a> Compiler<'a> {
         if global_index <= u8::MAX as InstructionIndex {
             self.emit_bytes(OpCode::DefineGlobal as u8, global_index as u8);
         } else {
-            match global_index.to_most_significant_le_bytes() {
+            match global_index.to_n_most_significant_le_bytes::<3>() {
                 Ok(bytes) => {
                     self.emit_opcode(OpCode::DefineGlobalLong);
                     for byte in bytes {
@@ -537,6 +548,77 @@ impl<'a> Compiler<'a> {
         self.emit_opcode(OpCode::Pop);
     }
 
+    fn for_statement(&mut self) {
+        // Ensure correctly scoped variables in for statement by adding them to a nested scope.
+        self.begin_scope();
+
+        self.consume(TokenType::LeftParen, "Expect '(' after 'for'.");
+        if self.match_token_type(TokenType::Semicolon) {
+            // No initializer.
+        } else if self.match_token_type(TokenType::Var) {
+            self.var_declaration();
+        } else {
+            self.expression_statement();
+        }
+
+        let mut loop_start = self.chunk.code.len() as InstructionIndex;
+        let mut exit_jump: Option<InstructionIndex> = None;
+        if !self.match_token_type(TokenType::Semicolon) {
+            self.expression();
+            self.consume(TokenType::Semicolon, "Expect ';' after loop condition.");
+
+            // Jump out of the loop if the condition is false.
+            exit_jump = Some(self.emit_jump(OpCode::JumpIfFalse));
+            self.emit_opcode(OpCode::Pop);
+        }
+
+        // Increment
+        if !self.match_token_type(TokenType::RightParen) {
+            let body_jump = self.emit_jump(OpCode::Jump);
+            let increment_start = self.chunk.code.len() as InstructionIndex;
+            self.expression();
+            self.emit_opcode(OpCode::Pop);
+            self.consume(TokenType::RightParen, "Expect ')' after for clauses.");
+
+            self.emit_loop(loop_start);
+            loop_start = increment_start;
+            self.chunk.patch_jump(body_jump);
+        }
+
+        self.statement();
+        self.emit_loop(loop_start);
+
+        if let Some(idx) = exit_jump {
+            self.chunk.patch_jump(idx);
+            self.emit_opcode(OpCode::Pop);
+        }
+
+        self.end_scope();
+    }
+
+    fn if_statement(&mut self) {
+        self.consume(TokenType::LeftParen, "Expect '(' after 'if'.");
+        self.expression();
+        self.consume(TokenType::RightParen, "Expect ')' after condition.");
+
+        let then_jump = self.emit_jump(OpCode::JumpIfFalse);
+        self.emit_opcode(OpCode::Pop);
+        self.statement();
+
+        let else_jump = self.emit_jump(OpCode::Jump);
+
+        // backpatch the placeholder offset now we know
+        // the byte size of the then-branch.
+        self.chunk.patch_jump(then_jump);
+        self.emit_opcode(OpCode::Pop);
+
+        if self.match_token_type(TokenType::Else) {
+            self.statement();
+        }
+
+        self.chunk.patch_jump(else_jump);
+    }
+
     fn print_statement(&mut self) {
         self.expression();
         self.consume(TokenType::Semicolon, "Expect ';' after value.");
@@ -584,6 +666,24 @@ impl<'a> Compiler<'a> {
     fn statement(&mut self) {
         if self.match_token_type(TokenType::Print) {
             self.print_statement();
+        } else if self.match_token_type(TokenType::For) {
+            self.for_statement();
+        } else if self.match_token_type(TokenType::If) {
+            self.if_statement();
+        } else if self.match_token_type(TokenType::While) {
+            let loop_start = self.chunk.code.len() as InstructionIndex;
+
+            self.consume(TokenType::LeftParen, "Expect '(' after 'while'.");
+            self.expression();
+            self.consume(TokenType::RightParen, "Expect ')' after condition.");
+
+            let exit_jump = self.emit_jump(OpCode::JumpIfFalse);
+            self.emit_opcode(OpCode::Pop);
+            self.statement();
+            self.emit_loop(loop_start);
+
+            self.chunk.patch_jump(exit_jump);
+            self.emit_opcode(OpCode::Pop);
         } else if self.match_token_type(TokenType::LeftBrace) {
             self.begin_scope();
             self.block();
@@ -595,25 +695,46 @@ impl<'a> Compiler<'a> {
 
     unsafe fn resolve_local(&mut self, token_position: TokenPosition) -> Option<usize> {
         let name = match token_position {
-            TokenPosition::Current => self.current_token.assume_init_ref(),
             TokenPosition::Previous => self.previous_token.assume_init_ref(),
         };
 
-        for n in self.locals_count - 1..=0 {
-            match self.local_at(n) {
-                Some(local) => {
-                    if local.name.lexeme == name.lexeme {
-                        if let LocalDepth::Uninitialized = local.depth {
-                            self.error("Can't read variable in its own initializer.");
+        if self.locals_count == 0 {
+            None
+        } else {
+            for n in self.locals_count - 1..=0 {
+                match self.local_at(n) {
+                    Some(local) => {
+                        if local.name.lexeme == name.lexeme {
+                            if let LocalDepth::Uninitialized = local.depth {
+                                self.error("Can't read variable in its own initializer.");
+                            }
+                            return Some(n);
                         }
-                        return Some(n);
                     }
+                    None => (),
                 }
-                None => (),
             }
+            None
         }
-        None
     }
+}
+
+fn and(compiler: &mut Compiler) {
+    let and_jump = compiler.emit_jump(OpCode::JumpIfFalse);
+    compiler.emit_opcode(OpCode::Pop);
+    compiler.parse_precedence(Precedence::And);
+    compiler.chunk.patch_jump(and_jump);
+}
+
+fn or(compiler: &mut Compiler) {
+    let else_jump = compiler.emit_jump(OpCode::JumpIfFalse);
+    let end_jump = compiler.emit_jump(OpCode::Jump);
+
+    compiler.chunk.patch_jump(else_jump);
+    compiler.emit_opcode(OpCode::Pop);
+
+    compiler.parse_precedence(Precedence::Or);
+    compiler.chunk.patch_jump(end_jump);
 }
 
 fn unary(compiler: &mut Compiler, _can_assign: bool) {
@@ -720,7 +841,7 @@ fn named_variable(compiler: &mut Compiler, can_assign: bool) {
 
     if op.is_long_discriminant() {
         compiler.emit_opcode(op);
-        match arg.to_most_significant_le_bytes() {
+        match arg.to_n_most_significant_le_bytes::<3>() {
             Ok(bytes) => bytes.iter().for_each(|b| compiler.emit_byte(*b)),
             Err(msg) => compiler.error(msg),
         }

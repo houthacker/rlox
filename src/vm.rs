@@ -5,7 +5,7 @@ use crate::object::{value_as_rlox_string_ref, Obj, ObjString};
 use crate::value::{as_bool, as_number, print_value, Value};
 use crate::{Chunk, Compiler, OpCode};
 
-use crate::chunk::{InstructionIndex, InstructionIndexConverter};
+use crate::chunk::{IndexConverter, InstructionIndex};
 use crate::scanner::Scanner;
 use crate::stack::UnsafeStack;
 use crate::table::Table;
@@ -154,6 +154,16 @@ impl VM {
                         return InterpretResult::RuntimeError;
                     }
                 }
+                OpCode::Jump => {
+                    let offset = self.read_short();
+                    self.ip = self.ip.offset(offset as isize);
+                }
+                OpCode::JumpIfFalse => {
+                    let offset = self.read_short();
+                    if VM::is_falsey(self.stack.peek(0).unwrap()) {
+                        self.ip = self.ip.offset(offset as isize);
+                    }
+                }
                 OpCode::Less => {
                     if self.validate_two_operands(
                         chunk,
@@ -164,6 +174,10 @@ impl VM {
                     } else {
                         return InterpretResult::RuntimeError;
                     }
+                }
+                OpCode::Loop => {
+                    let offset = self.read_short();
+                    self.ip = self.ip.sub(offset as usize);
                 }
                 OpCode::Multiply => {
                     if self.validate_two_operands(
@@ -432,8 +446,15 @@ impl VM {
         byte
     }
 
+    #[inline(always)]
+    unsafe fn read_short(&mut self) -> u16 {
+        self.ip = self.ip.offset(2);
+
+        ((*self.ip.offset(-2) as u16) << 8u16) | *self.ip.offset(-1) as u16
+    }
+
     unsafe fn read_long_index(&mut self) -> InstructionIndex {
-        InstructionIndex::from_most_significant_le_bytes([
+        InstructionIndex::from_n_most_significant_le_bytes::<3>([
             self.read_byte(),
             self.read_byte(),
             self.read_byte(),
@@ -441,7 +462,7 @@ impl VM {
     }
 
     #[inline(always)]
-    fn get_offset(chunk: &Chunk, code_ptr: *const u8) -> usize {
+    fn get_offset(chunk: &Chunk, code_ptr: *const u8) -> InstructionIndex {
         let start = chunk.code.as_ptr() as usize;
         code_ptr as usize - start
     }
@@ -492,6 +513,33 @@ mod tests {
     #[test]
     fn print_local_variable() {
         let source = String::from("{ var cup; print cup;}");
+        assert_eq!(VM::interpret(source), InterpretResult::Ok);
+    }
+
+    #[test]
+    fn execute_while_loop() {
+        let source =
+            String::from("var idx = 0; print idx; while (idx < 10) { idx = idx + 1; } print idx;");
+        assert_eq!(VM::interpret(source), InterpretResult::Ok);
+    }
+
+    #[test]
+    fn execute_for_loop_with_var() {
+        let source = String::from("for (var x = 0; x < 10; x = x + 1) { print x; }");
+        assert_eq!(VM::interpret(source), InterpretResult::Ok);
+    }
+
+    #[test]
+    fn exec_and_operator() {
+        let source =
+            String::from("if (true and false) { print \"true\"; } else { print \"false\"; }");
+        assert_eq!(VM::interpret(source), InterpretResult::Ok);
+    }
+
+    #[test]
+    fn exec_or_operator() {
+        let source =
+            String::from("if (true or false) { print \"true\"; } else { print \"false\"; }");
         assert_eq!(VM::interpret(source), InterpretResult::Ok);
     }
 }
