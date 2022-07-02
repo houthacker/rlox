@@ -1,17 +1,20 @@
 use crate::table::Table;
 use crate::value::Value;
+use crate::Chunk;
 use std::collections::hash_map::DefaultHasher;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 
 pub enum Obj {
     String(*const ObjString),
+    Function(*mut ObjFunction),
 }
 
 impl Clone for Obj {
     fn clone(&self) -> Self {
         match self {
-            Obj::String(obj_string) => Obj::String(obj_string.clone()),
+            Obj::String(obj_string) => Obj::String(*obj_string),
+            Obj::Function(_) => panic!("Cannot clone Function."),
         }
     }
 }
@@ -25,6 +28,8 @@ impl PartialEq for Obj {
         } else {
             match (self, other) {
                 (Obj::String(lhs), Obj::String(rhs)) => lhs == rhs,
+                (Obj::Function(lhs), Obj::Function(rhs)) => *lhs == *rhs,
+                _ => false,
             }
         }
     }
@@ -36,12 +41,71 @@ impl Display for Obj {
             Obj::String(obj_string) => {
                 write!(f, "{}", unsafe { (*obj_string).as_ref().unwrap() })
             }
+            Obj::Function(func) => {
+                write!(f, "{}", unsafe { func.as_ref().unwrap() })
+            }
+        }
+    }
+}
+
+impl Obj {
+    pub fn as_rlox_string_ref<'a, 'b: 'a>(&'a self) -> Option<&'b ObjString> {
+        match self {
+            Obj::String(obj_string) => unsafe { obj_string.as_ref() },
+            _ => None,
         }
     }
 }
 
 pub trait Hashed {
     fn calculated_hash(&self) -> u64;
+}
+
+#[cfg_attr(feature = "rlox_debug", derive(Debug))]
+pub struct ObjFunction {
+    pub arity: u32,
+    pub chunk: Chunk,
+    pub name: Option<*const ObjString>,
+}
+
+impl PartialEq for ObjFunction {
+    fn eq(&self, other: &Self) -> bool {
+        // todo check parameters
+        unsafe {
+            self.arity == other.arity
+                && match (self.name, other.name) {
+                    (Some(lhs), Some(rhs)) => *lhs == *rhs,
+                    _ => false,
+                }
+        }
+    }
+}
+
+impl Display for ObjFunction {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        match self.name {
+            Some(nm) => unsafe { write!(f, "<fn {}>", &(*nm).data) },
+            None => write!(f, "<script>"),
+        }
+    }
+}
+
+impl ObjFunction {
+    pub fn new(name: &ObjString) -> Self {
+        Self {
+            arity: 0,
+            chunk: Chunk::new(),
+            name: Some(name),
+        }
+    }
+
+    pub fn new_unnamed() -> Self {
+        Self {
+            arity: 0,
+            chunk: Chunk::new(),
+            name: None,
+        }
+    }
 }
 
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
@@ -120,18 +184,4 @@ impl ObjString {
     pub fn take_string_interned(value: String, cache: &mut Table<ObjString, Value>) -> &Self {
         Self::new_interned(value, cache)
     }
-}
-
-pub fn obj_as_rlox_string_ref<'a>(obj: Obj) -> &'a ObjString {
-    match obj {
-        Obj::String(obj_string) => unsafe { obj_string.as_ref().unwrap() },
-    }
-}
-
-pub fn value_as_rlox_string_ref<'a>(value: Value) -> &'a ObjString {
-    if let Value::Obj(obj) = value {
-        return obj_as_rlox_string_ref(obj);
-    }
-
-    panic!("Given Value is not an Obj")
 }

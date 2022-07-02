@@ -3,6 +3,7 @@ use std::alloc::Layout;
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
 
+use crate::vm::CallFrame;
 use std::ptr::NonNull;
 use std::{mem, ptr};
 
@@ -74,6 +75,10 @@ impl<T, const SIZE: usize> UnsafeStack<T, SIZE> {
         self.ptr.as_ptr().add(index).as_ref().unwrap_unchecked()
     }
 
+    pub unsafe fn get_at_unchecked_mut(&mut self, index: usize) -> &mut T {
+        self.ptr.as_ptr().add(index).as_mut().unwrap_unchecked()
+    }
+
     pub unsafe fn set_at_unchecked(&mut self, index: usize, value: T) {
         let ptr = self.ptr.as_ptr().add(index);
 
@@ -127,6 +132,29 @@ impl<const SIZE: usize> Debug for UnsafeStack<Value, SIZE> {
                     Value::Number(n) => format.push_str(&n.to_string()),
                     Value::Obj(obj) => format.push_str(&format!("'{}'", obj)),
                 },
+                None => (),
+            }
+
+            if sp < self.len() - 1 {
+                format.push_str(", ");
+            }
+        }
+
+        format.push_str(" ]");
+        format.push('\n');
+
+        f.write_str(&format)
+    }
+}
+
+impl<'a, const SIZE: usize, const CF_SIZE: usize> Debug for UnsafeStack<CallFrame<CF_SIZE>, SIZE> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        let mut format = String::from("          ");
+
+        format.push_str("[ ");
+        for sp in 0..self.len() {
+            match self.peek(sp) {
+                Some(call_frame) => format.push_str(&format!("'{:?}'", call_frame)),
                 None => (),
             }
 

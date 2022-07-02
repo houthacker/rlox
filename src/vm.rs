@@ -1,15 +1,15 @@
 #[cfg(feature = "rlox_debug")]
 use crate::debug::disassemble_instruction;
 
-use crate::object::{value_as_rlox_string_ref, Obj, ObjString};
+use crate::object::{Obj, ObjFunction, ObjString};
 use crate::value::{as_bool, as_number, print_value, Value};
-use crate::{Chunk, Compiler, OpCode};
+use crate::{Compiler, OpCode};
 
 use crate::chunk::{IndexConverter, InstructionIndex};
+use crate::compiler::FunctionType;
 use crate::scanner::Scanner;
 use crate::stack::UnsafeStack;
 use crate::table::Table;
-use std::ptr;
 
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
 #[derive(PartialEq)]
@@ -20,9 +20,59 @@ pub enum InterpretResult {
 }
 
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
-pub struct VM {
+pub struct CallFrame<const SIZE: usize> {
+    function: *mut ObjFunction,
     ip: *mut u8,
-    stack: UnsafeStack<Value, 256>,
+    slots: *mut UnsafeStack<Value, SIZE>,
+}
+
+impl<const SIZE: usize> CallFrame<SIZE> {
+    pub fn new(function: &mut ObjFunction, slots: *mut UnsafeStack<Value, SIZE>) -> Self {
+        Self {
+            function,
+            ip: function.chunk.code.as_mut_ptr(),
+            slots,
+        }
+    }
+
+    pub unsafe fn increment_ip(&mut self, count: usize) {
+        self.ip = self.ip.add(count);
+    }
+
+    pub unsafe fn decrement_ip(&mut self, count: usize) {
+        self.ip = self.ip.sub(count);
+    }
+
+    pub unsafe fn get_function(&self) -> &ObjFunction {
+        self.function.as_ref().unwrap_unchecked()
+    }
+
+    pub unsafe fn get_function_mut(&mut self) -> &mut ObjFunction {
+        self.function.as_mut().unwrap_unchecked()
+    }
+
+    pub unsafe fn get_slot_at_unchecked(&mut self, index: InstructionIndex) -> &Value {
+        self.slots
+            .as_mut()
+            .unwrap_unchecked()
+            .get_at_unchecked(index)
+    }
+
+    pub unsafe fn set_slot_at(&mut self, index: InstructionIndex, value: Value) {
+        self.slots
+            .as_mut()
+            .unwrap_unchecked()
+            .set_at_unchecked(index, value);
+    }
+}
+
+const FRAMES_MAX: usize = 64;
+const STACK_MAX: usize = FRAMES_MAX * u8::MAX as usize;
+
+#[cfg_attr(feature = "rlox_debug", derive(Debug))]
+pub struct VM {
+    frames: UnsafeStack<CallFrame<STACK_MAX>, FRAMES_MAX>,
+    stack: UnsafeStack<Value, STACK_MAX>,
     globals: Table<ObjString, Value>,
     strings: Table<ObjString, Value>,
 }
@@ -30,7 +80,7 @@ pub struct VM {
 impl VM {
     pub fn new(strings: Table<ObjString, Value>) -> Self {
         Self {
-            ip: ptr::null_mut(),
+            frames: UnsafeStack::new(),
             stack: UnsafeStack::new(),
             globals: Table::new(),
             strings,
@@ -38,25 +88,30 @@ impl VM {
     }
 
     pub fn interpret(source: String) -> InterpretResult {
-        let mut chunk = Chunk::new();
-        let mut compiler = Compiler::new(Scanner::new(source), &mut chunk);
+        let mut compiler = Compiler::new(Scanner::new(source), FunctionType::Script);
 
-        if !compiler.compile() {
-            InterpretResult::CompileError
-        } else {
-            let mut vm = VM::new(Table::from(compiler.string_cache()));
-            unsafe { vm.run(&mut chunk) }
+        match compiler.compile() {
+            None => InterpretResult::CompileError,
+            Some((function, string_cache)) => {
+                let mut vm = VM::new(string_cache);
+                vm.stack.push(Value::from_obj(Obj::Function(function)));
+
+                let call_frame = CallFrame::new(function, &mut vm.stack);
+                vm.frames.push(call_frame);
+
+                unsafe { vm.run() }
+            }
         }
     }
 
-    pub unsafe fn run(&mut self, chunk: &mut Chunk) -> InterpretResult {
-        self.ip = chunk.code.as_mut_ptr();
-
+    unsafe fn run(&mut self) -> InterpretResult {
         loop {
             if cfg!(feature = "rlox_debug") {
+                let call_frame = self.frames.get_at_unchecked_mut(self.frames.len() - 1);
+
                 // Disassemble current instruction
-                let offset = VM::get_offset(chunk, self.ip);
-                disassemble_instruction(chunk, offset);
+                let offset = VM::get_offset(call_frame);
+                disassemble_instruction(&call_frame.get_function().chunk, offset);
             }
 
             let opcode = OpCode::try_from(self.read_byte());
@@ -69,23 +124,28 @@ impl VM {
                 OpCode::Add => {
                     if self.type_check_two_operands(Value::is_string) {
                         self.concatenate();
-                    } else if self.validate_two_operands(
-                        chunk,
-                        Value::is_number,
-                        "Operands must be numbers.",
-                    ) {
+                    } else if self
+                        .validate_two_operands(Value::is_number, "Operands must be numbers.")
+                    {
                         self.op_add();
                     } else {
-                        self.runtime_error(chunk, "Operands must be two numbers or two strings.");
+                        self.runtime_error("Operands must be two numbers or two strings.");
                         return InterpretResult::RuntimeError;
                     }
                 }
                 OpCode::Constant => {
-                    let value = chunk.read_constant(self.read_byte() as usize);
+                    let index = self.read_byte();
+                    let call_frame = self.frames.get_at_unchecked_mut(self.frames.len() - 1);
+                    let value = call_frame
+                        .get_function()
+                        .chunk
+                        .read_constant(index as usize);
                     self.stack.push(value);
                 }
                 OpCode::ConstantLong => {
-                    let value = chunk.read_constant(self.read_long_index());
+                    let index = self.read_long_index();
+                    let call_frame = self.frames.get_at_unchecked_mut(self.frames.len() - 1);
+                    let value = call_frame.get_function().chunk.read_constant(index);
                     self.stack.push(value);
                 }
                 OpCode::DefineGlobal => {
@@ -95,7 +155,7 @@ impl VM {
                     // In rlox we hope to prevent the need for a GC due to rusts'
                     // memory model characteristics.
                     let value = self.stack.pop().unwrap();
-                    let var_name: ObjString = self.read_constant_string(chunk, false).clone();
+                    let var_name: ObjString = self.read_constant_string(false).clone();
 
                     self.globals.insert(var_name, value);
                 }
@@ -106,16 +166,12 @@ impl VM {
                     // In rlox we hope to prevent the need for a GC due to rusts'
                     // memory model characteristics.
                     let value = self.stack.pop().unwrap();
-                    let var_name: ObjString = self.read_constant_string(chunk, true).clone();
+                    let var_name: ObjString = self.read_constant_string(true).clone();
 
                     self.globals.insert(var_name, value);
                 }
                 OpCode::Divide => {
-                    if self.validate_two_operands(
-                        chunk,
-                        Value::is_number,
-                        "Operands must be numbers.",
-                    ) {
+                    if self.validate_two_operands(Value::is_number, "Operands must be numbers.") {
                         self.op_divide();
                     } else {
                         return InterpretResult::RuntimeError;
@@ -130,12 +186,12 @@ impl VM {
                 }
                 OpCode::False => self.stack.push(Value::from_bool(false)),
                 OpCode::GetGlobal => {
-                    if !self.op_get_global(chunk, false) {
+                    if !self.op_get_global(false) {
                         return InterpretResult::RuntimeError;
                     }
                 }
                 OpCode::GetGlobalLong => {
-                    if !self.op_get_global(chunk, true) {
+                    if !self.op_get_global(true) {
                         return InterpretResult::RuntimeError;
                     }
                 }
@@ -144,11 +200,7 @@ impl VM {
                 }
                 OpCode::GetLocalLong => self.op_get_local(true),
                 OpCode::Greater => {
-                    if self.validate_two_operands(
-                        chunk,
-                        Value::is_number,
-                        "Operands must be numbers.",
-                    ) {
+                    if self.validate_two_operands(Value::is_number, "Operands must be numbers.") {
                         self.op_greater();
                     } else {
                         return InterpretResult::RuntimeError;
@@ -156,20 +208,18 @@ impl VM {
                 }
                 OpCode::Jump => {
                     let offset = self.read_short();
-                    self.ip = self.ip.offset(offset as isize);
+                    let call_frame = self.frames.get_at_unchecked_mut(self.frames.len() - 1);
+                    call_frame.increment_ip(offset as usize);
                 }
                 OpCode::JumpIfFalse => {
                     let offset = self.read_short();
                     if VM::is_falsey(self.stack.peek(0).unwrap()) {
-                        self.ip = self.ip.offset(offset as isize);
+                        let call_frame = self.frames.get_at_unchecked_mut(self.frames.len() - 1);
+                        call_frame.increment_ip(offset as usize);
                     }
                 }
                 OpCode::Less => {
-                    if self.validate_two_operands(
-                        chunk,
-                        Value::is_number,
-                        "Operands must be numbers.",
-                    ) {
+                    if self.validate_two_operands(Value::is_number, "Operands must be numbers.") {
                         self.op_less();
                     } else {
                         return InterpretResult::RuntimeError;
@@ -177,14 +227,11 @@ impl VM {
                 }
                 OpCode::Loop => {
                     let offset = self.read_short();
-                    self.ip = self.ip.sub(offset as usize);
+                    let call_frame = self.frames.get_at_unchecked_mut(self.frames.len() - 1);
+                    call_frame.decrement_ip(offset as usize);
                 }
                 OpCode::Multiply => {
-                    if self.validate_two_operands(
-                        chunk,
-                        Value::is_number,
-                        "Operands must be numbers.",
-                    ) {
+                    if self.validate_two_operands(Value::is_number, "Operands must be numbers.") {
                         self.op_multiply();
                     } else {
                         return InterpretResult::RuntimeError;
@@ -193,7 +240,7 @@ impl VM {
                 OpCode::Negate => match self.stack.peek(0) {
                     Some(elem) => {
                         if !Value::is_number(elem) {
-                            self.runtime_error(chunk, "Operand must be a number.");
+                            self.runtime_error("Operand must be a number.");
                             return InterpretResult::RuntimeError;
                         }
                         self.stack_top_negate_number();
@@ -218,7 +265,7 @@ impl VM {
                         println!();
                     }
                     None => {
-                        self.runtime_error(chunk, "No operand to print");
+                        self.runtime_error("No operand to print");
                         return InterpretResult::RuntimeError;
                     }
                 },
@@ -227,12 +274,12 @@ impl VM {
                     return InterpretResult::Ok;
                 }
                 OpCode::SetGlobal => {
-                    if !self.op_set_global(chunk, false) {
+                    if !self.op_set_global(false) {
                         return InterpretResult::RuntimeError;
                     }
                 }
                 OpCode::SetGlobalLong => {
-                    if !self.op_set_global(chunk, true) {
+                    if !self.op_set_global(true) {
                         return InterpretResult::RuntimeError;
                     }
                 }
@@ -277,8 +324,8 @@ impl VM {
         let lhs = self.stack.pop();
         if let (Some(y), Some(x)) = (rhs, lhs) {
             let concatenated = ObjString::add_interned(
-                &value_as_rlox_string_ref(x),
-                &value_as_rlox_string_ref(y),
+                unsafe { x.as_rlox_string_ref().unwrap_unchecked() },
+                unsafe { y.as_rlox_string_ref().unwrap_unchecked() },
                 &mut self.strings,
             );
             self.stack.push(Value::from_obj(Obj::String(concatenated)))
@@ -298,39 +345,42 @@ impl VM {
         }
     }
 
-    fn validate_two_operands(
-        &mut self,
-        chunk: &Chunk,
-        validator: fn(&Value) -> bool,
-        message: &str,
-    ) -> bool {
+    fn validate_two_operands(&mut self, validator: fn(&Value) -> bool, message: &str) -> bool {
         if !self.type_check_two_operands(validator) {
-            self.runtime_error(chunk, message);
+            self.runtime_error(message);
             return false;
         }
 
         true
     }
 
-    fn runtime_error(&mut self, chunk: &Chunk, message: &str) {
+    fn runtime_error(&mut self, message: &str) {
         eprintln!("{}", message);
-        let offset = VM::get_offset(chunk, self.ip);
-        let line = chunk.get_line(offset);
-        eprintln!("[line {}] in script", line.no);
+        unsafe {
+            let call_frame = self.frames.get_at_unchecked_mut(self.frames.len() - 1);
+            let chunk = &call_frame.get_function().chunk;
+            let offset = VM::get_offset(call_frame);
+            let line = chunk.get_line(offset);
+            eprintln!("[line {}] in script", line.no);
+        }
 
         self.stack.reset();
     }
 
-    fn read_constant_string(&mut self, chunk: &mut Chunk, long_constant: bool) -> &ObjString {
-        let value = unsafe {
-            if long_constant {
-                chunk.read_constant(self.read_long_index())
-            } else {
-                chunk.read_constant(self.read_byte() as InstructionIndex)
-            }
+    unsafe fn read_constant_string(&mut self, long_constant: bool) -> &ObjString {
+        let index = if long_constant {
+            self.read_long_index()
+        } else {
+            self.read_byte() as InstructionIndex
         };
 
-        value_as_rlox_string_ref(value)
+        self.frames
+            .get_at_unchecked_mut(self.frames.len() - 1)
+            .get_function_mut()
+            .chunk
+            .read_constant(index)
+            .as_rlox_string_ref()
+            .unwrap_unchecked()
     }
 
     #[inline(always)]
@@ -390,7 +440,8 @@ impl VM {
             }
         };
 
-        let value = unsafe { self.stack.get_at_unchecked(idx).clone() };
+        let call_frame = unsafe { self.frames.get_at_unchecked_mut(self.frames.len() - 1) };
+        let value = unsafe { call_frame.get_slot_at_unchecked(idx).clone() };
         self.stack.push(value);
     }
 
@@ -404,11 +455,13 @@ impl VM {
         };
 
         let value = self.stack.peek(0).unwrap().clone();
-        unsafe { self.stack.set_at_unchecked(slot, value) };
+
+        let call_frame = unsafe { self.frames.get_at_unchecked_mut(self.frames.len() - 1) };
+        unsafe { call_frame.set_slot_at(slot, value) };
     }
 
-    fn op_get_global(&mut self, chunk: &mut Chunk, long_global: bool) -> bool {
-        let var_name = self.read_constant_string(chunk, long_global).clone();
+    fn op_get_global(&mut self, long_global: bool) -> bool {
+        let var_name = unsafe { self.read_constant_string(long_global).clone() };
         match self.globals.get(&var_name) {
             Some(value) => {
                 // TODO can value be cloned here?
@@ -416,14 +469,14 @@ impl VM {
                 true
             }
             None => {
-                self.runtime_error(chunk, &format!("Undefined variable '{}'.", var_name.data));
+                self.runtime_error(&format!("Undefined variable '{}'.", var_name.data));
                 false
             }
         }
     }
 
-    fn op_set_global(&mut self, chunk: &mut Chunk, long_global: bool) -> bool {
-        let var_name = self.read_constant_string(chunk, long_global).clone();
+    fn op_set_global(&mut self, long_global: bool) -> bool {
+        let var_name = unsafe { self.read_constant_string(long_global).clone() };
 
         match self.globals.get(&var_name) {
             Some(_) => {
@@ -432,7 +485,7 @@ impl VM {
                 true
             }
             None => {
-                self.runtime_error(chunk, &format!("Undefined variable '{}'.", &var_name.data));
+                self.runtime_error(&format!("Undefined variable '{}'.", &var_name.data));
                 false
             }
         }
@@ -440,17 +493,19 @@ impl VM {
 
     #[inline(always)]
     unsafe fn read_byte(&mut self) -> u8 {
-        let byte = *self.ip;
-        self.ip = self.ip.offset(1);
+        let call_frame = self.frames.get_at_unchecked_mut(self.frames.len() - 1);
+        let byte = *call_frame.ip;
+        call_frame.increment_ip(1);
 
         byte
     }
 
     #[inline(always)]
     unsafe fn read_short(&mut self) -> u16 {
-        self.ip = self.ip.offset(2);
+        let call_frame = self.frames.get_at_unchecked_mut(self.frames.len() - 1);
+        call_frame.increment_ip(2);
 
-        ((*self.ip.offset(-2) as u16) << 8u16) | *self.ip.offset(-1) as u16
+        ((*call_frame.ip.offset(-2) as u16) << 8u16) | *call_frame.ip.offset(-1) as u16
     }
 
     unsafe fn read_long_index(&mut self) -> InstructionIndex {
@@ -462,9 +517,9 @@ impl VM {
     }
 
     #[inline(always)]
-    fn get_offset(chunk: &Chunk, code_ptr: *const u8) -> InstructionIndex {
-        let start = chunk.code.as_ptr() as usize;
-        code_ptr as usize - start
+    unsafe fn get_offset(call_frame: &CallFrame<STACK_MAX>) -> InstructionIndex {
+        let start = call_frame.get_function().chunk.code.as_ptr() as usize;
+        call_frame.ip as usize - start
     }
 }
 

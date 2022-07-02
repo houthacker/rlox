@@ -1,4 +1,4 @@
-use crate::object::Obj;
+use crate::object::{Obj, ObjFunction, ObjString};
 use std::fmt::Formatter;
 
 pub enum Value {
@@ -99,11 +99,24 @@ impl Value {
     }
 
     pub fn is_string(value: &Value) -> bool {
-        match value {
-            Value::Obj(obj) => match obj {
-                Obj::String(_not_used) => true,
-            },
-            _ => false,
+        matches!(value, Value::Obj(Obj::String(_not_used)))
+    }
+
+    pub fn is_function(value: &Value) -> bool {
+        matches!(value, Value::Obj(Obj::Function(_not_uused)))
+    }
+
+    pub fn as_rlox_string_ref<'a, 'b: 'a>(&'a self) -> Option<&'b ObjString> {
+        match self {
+            Value::Obj(obj) => obj.as_rlox_string_ref(),
+            _ => None,
+        }
+    }
+
+    pub fn as_function(&self) -> Option<&ObjFunction> {
+        match self {
+            Value::Obj(Obj::Function(func)) => unsafe { func.as_ref() },
+            _ => None,
         }
     }
 }

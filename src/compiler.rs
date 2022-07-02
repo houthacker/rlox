@@ -4,7 +4,7 @@ use std::alloc::Layout;
 #[cfg(feature = "rlox_debug")]
 use crate::debug::disassemble_chunk;
 
-use crate::object::{Obj, ObjString};
+use crate::object::{Obj, ObjFunction, ObjString};
 use crate::scanner::{Scanner, Token, TokenType};
 use crate::table::Table;
 use crate::value::Value;
@@ -104,20 +104,6 @@ impl Local {
 
 const MAX_LOCALS: usize = u8::MAX as usize + 1usize;
 
-#[cfg_attr(feature = "rlox_debug", derive(Debug))]
-pub struct LocalsTracker {
-    locals: NonNull<Local>,
-}
-
-impl Drop for LocalsTracker {
-    fn drop(&mut self) {
-        let layout = Layout::array::<Local>(MAX_LOCALS).unwrap();
-        unsafe {
-            std::alloc::dealloc(self.locals.as_ptr() as *mut u8, layout);
-        }
-    }
-}
-
 fn allocate_locals() -> NonNull<Local> {
     let layout = Layout::array::<Local>(MAX_LOCALS as usize).unwrap();
     let memory = unsafe { std::alloc::alloc_zeroed(layout) };
@@ -129,12 +115,30 @@ fn allocate_locals() -> NonNull<Local> {
 }
 
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
-pub struct Compiler<'a> {
+pub enum FunctionType {
+    Function,
+    Script,
+}
+
+#[cfg_attr(feature = "rlox_debug", derive(Debug))]
+pub struct FunctionHandle {
+    function: ObjFunction,
+    kind: FunctionType,
+}
+
+impl FunctionHandle {
+    pub fn new(function: ObjFunction, kind: FunctionType) -> Self {
+        Self { function, kind }
+    }
+}
+
+#[cfg_attr(feature = "rlox_debug", derive(Debug))]
+pub struct Compiler {
     scanner: Scanner,
-    chunk: &'a mut Chunk,
     string_cache: Table<ObjString, Value>,
     current_token: MaybeUninit<Token>,
     previous_token: MaybeUninit<Token>,
+    function_handle: FunctionHandle,
     locals: NonNull<Local>,
     locals_count: usize,
     locals_scope_depth: isize,
@@ -142,20 +146,32 @@ pub struct Compiler<'a> {
     panic_mode: bool,
 }
 
-impl<'a> Compiler<'a> {
-    pub fn new(scanner: Scanner, chunk: &'a mut Chunk) -> Self {
-        Self {
+impl Compiler {
+    pub fn new(scanner: Scanner, function_kind: FunctionType) -> Self {
+        let instance = Self {
             scanner,
-            chunk,
             string_cache: Table::new(),
             current_token: MaybeUninit::uninit(),
             previous_token: MaybeUninit::uninit(),
+            function_handle: FunctionHandle::new(ObjFunction::new_unnamed(), function_kind),
             locals: allocate_locals(),
             locals_count: 0,
             locals_scope_depth: 0,
             had_error: false,
             panic_mode: false,
-        }
+        };
+
+        // Add an 'empty' local variable which reserves slot 0 in the vm stack.
+        let mut local = Local::new(Token {
+            kind: TokenType::Nil,
+            lexeme: String::default(),
+            line: 0,
+        });
+        local.depth = LocalDepth::Initialized(0);
+
+        unsafe { ptr::write(instance.locals.as_ptr(), local) }
+
+        instance
     }
 
     #[rustfmt::skip]
@@ -187,19 +203,25 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    pub fn compile(&mut self) -> bool {
+    pub fn compile(&mut self) -> Option<(&mut ObjFunction, Table<ObjString, Value>)> {
         self.advance();
 
         while !self.match_token_type(TokenType::EOF) {
             self.declaration();
         }
 
-        self.end_compiler();
-        !self.had_error
+        if self.had_error {
+            None
+        } else {
+            let string_cache_copy = Table::from(&self.string_cache);
+            let func = self.end_compiler();
+
+            Some((func, string_cache_copy))
+        }
     }
 
-    pub fn string_cache(&self) -> &Table<ObjString, Value> {
-        &self.string_cache
+    fn current_chunk(&mut self) -> &mut Chunk {
+        &mut self.function_handle.function.chunk
     }
 
     // Notifies the user of an error at the current token.
@@ -286,7 +308,7 @@ impl<'a> Compiler<'a> {
 
     fn emit_byte(&mut self, byte: u8) {
         let ln = unsafe { self.previous_token.assume_init_ref() }.line;
-        self.chunk.write(byte, ln);
+        self.current_chunk().write(byte, ln);
     }
 
     fn emit_bytes(&mut self, byte1: u8, byte2: u8) {
@@ -297,7 +319,7 @@ impl<'a> Compiler<'a> {
     fn emit_loop(&mut self, loop_start: InstructionIndex) {
         self.emit_opcode(OpCode::Loop);
 
-        let offset = self.chunk.code.len() - loop_start + 2;
+        let offset = self.current_chunk().code.len() - loop_start + 2;
         if offset > u16::MAX as usize {
             self.error("Loop body too large.");
         }
@@ -310,19 +332,28 @@ impl<'a> Compiler<'a> {
 
         // Allow for max 2^16-1 bytes between jumps.
         self.emit_bytes(0xff, 0xff);
-        self.chunk.code.len() - 2
+        self.current_chunk().code.len() - 2
     }
 
     fn emit_return(&mut self) {
         self.emit_opcode(OpCode::Return);
     }
 
-    fn end_compiler(&mut self) {
+    fn end_compiler(&mut self) -> &mut ObjFunction {
         self.emit_return();
 
         if cfg!(feature = "rlox_debug") && !self.had_error {
-            disassemble_chunk(self.chunk, "code");
+            let chunk_name = match self.function_handle.function.name {
+                Some(name) => unsafe {
+                    let n = &name.as_ref().unwrap_unchecked().data;
+                    n
+                },
+                None => "<script>",
+            };
+            disassemble_chunk(self.current_chunk(), chunk_name);
         }
+
+        &mut self.function_handle.function
     }
 
     fn begin_scope(&mut self) {
@@ -408,7 +439,7 @@ impl<'a> Compiler<'a> {
         // Just add the constant and do not emit OpCode::Constant, since
         // identifier_constant must cause the VM to add the constant value to the stack,
         // not its' related variable name.
-        self.chunk.add_constant(value)
+        self.current_chunk().add_constant(value)
     }
 
     fn add_local(&mut self, token_position: TokenPosition) {
@@ -561,7 +592,7 @@ impl<'a> Compiler<'a> {
             self.expression_statement();
         }
 
-        let mut loop_start = self.chunk.code.len() as InstructionIndex;
+        let mut loop_start = self.current_chunk().code.len() as InstructionIndex;
         let mut exit_jump: Option<InstructionIndex> = None;
         if !self.match_token_type(TokenType::Semicolon) {
             self.expression();
@@ -575,21 +606,21 @@ impl<'a> Compiler<'a> {
         // Increment
         if !self.match_token_type(TokenType::RightParen) {
             let body_jump = self.emit_jump(OpCode::Jump);
-            let increment_start = self.chunk.code.len() as InstructionIndex;
+            let increment_start = self.current_chunk().code.len() as InstructionIndex;
             self.expression();
             self.emit_opcode(OpCode::Pop);
             self.consume(TokenType::RightParen, "Expect ')' after for clauses.");
 
             self.emit_loop(loop_start);
             loop_start = increment_start;
-            self.chunk.patch_jump(body_jump);
+            self.current_chunk().patch_jump(body_jump);
         }
 
         self.statement();
         self.emit_loop(loop_start);
 
         if let Some(idx) = exit_jump {
-            self.chunk.patch_jump(idx);
+            self.current_chunk().patch_jump(idx);
             self.emit_opcode(OpCode::Pop);
         }
 
@@ -609,14 +640,14 @@ impl<'a> Compiler<'a> {
 
         // backpatch the placeholder offset now we know
         // the byte size of the then-branch.
-        self.chunk.patch_jump(then_jump);
+        self.current_chunk().patch_jump(then_jump);
         self.emit_opcode(OpCode::Pop);
 
         if self.match_token_type(TokenType::Else) {
             self.statement();
         }
 
-        self.chunk.patch_jump(else_jump);
+        self.current_chunk().patch_jump(else_jump);
     }
 
     fn print_statement(&mut self) {
@@ -671,7 +702,7 @@ impl<'a> Compiler<'a> {
         } else if self.match_token_type(TokenType::If) {
             self.if_statement();
         } else if self.match_token_type(TokenType::While) {
-            let loop_start = self.chunk.code.len() as InstructionIndex;
+            let loop_start = self.current_chunk().code.len() as InstructionIndex;
 
             self.consume(TokenType::LeftParen, "Expect '(' after 'while'.");
             self.expression();
@@ -682,7 +713,7 @@ impl<'a> Compiler<'a> {
             self.statement();
             self.emit_loop(loop_start);
 
-            self.chunk.patch_jump(exit_jump);
+            self.current_chunk().patch_jump(exit_jump);
             self.emit_opcode(OpCode::Pop);
         } else if self.match_token_type(TokenType::LeftBrace) {
             self.begin_scope();
@@ -723,18 +754,18 @@ fn and(compiler: &mut Compiler) {
     let and_jump = compiler.emit_jump(OpCode::JumpIfFalse);
     compiler.emit_opcode(OpCode::Pop);
     compiler.parse_precedence(Precedence::And);
-    compiler.chunk.patch_jump(and_jump);
+    compiler.current_chunk().patch_jump(and_jump);
 }
 
 fn or(compiler: &mut Compiler) {
     let else_jump = compiler.emit_jump(OpCode::JumpIfFalse);
     let end_jump = compiler.emit_jump(OpCode::Jump);
 
-    compiler.chunk.patch_jump(else_jump);
+    compiler.current_chunk().patch_jump(else_jump);
     compiler.emit_opcode(OpCode::Pop);
 
     compiler.parse_precedence(Precedence::Or);
-    compiler.chunk.patch_jump(end_jump);
+    compiler.current_chunk().patch_jump(end_jump);
 }
 
 fn unary(compiler: &mut Compiler, _can_assign: bool) {
@@ -788,7 +819,7 @@ fn number(compiler: &mut Compiler, _can_assign: bool) {
     let number = prev.lexeme.parse::<f64>().unwrap();
 
     compiler
-        .chunk
+        .current_chunk()
         .write_constant(Value::from_number(number), ln);
 }
 
@@ -799,7 +830,7 @@ fn string(compiler: &mut Compiler, _can_assign: bool) {
     let slice = &prev.lexeme[1..prev.lexeme.len() - 1];
     let rlox_string = ObjString::copy_string_interned(slice, &mut compiler.string_cache);
     let rlox_value = Value::from_obj(Obj::String(rlox_string));
-    compiler.chunk.write_constant(rlox_value, ln);
+    compiler.current_chunk().write_constant(rlox_value, ln);
 }
 
 fn variable(compiler: &mut Compiler, can_assign: bool) {
@@ -857,10 +888,9 @@ mod tests {
     #[test]
     fn compile_with_global_variables() {
         let source = String::from("var beverage = \"cafe au lait\";\nvar breakfast = \"beignets with \" + beverage;\nprint breakfast;");
-        let mut chunk = Chunk::new();
-        let mut compiler = Compiler::new(Scanner::new(source), &mut chunk);
+        let mut compiler = Compiler::new(Scanner::new(source), FunctionType::Script);
 
-        assert!(compiler.compile());
+        assert!(matches!(compiler.compile(), Some(_)));
 
         let expected_constants = vec![
             Value::from_obj(Obj::String(ObjString::new_interned(
@@ -889,13 +919,19 @@ mod tests {
             ))),
         ];
 
-        assert_eq!(expected_constants.len(), chunk.constants.len());
-        expected_constants
-            .iter()
-            .all(|expected_element| chunk.constants.contains(expected_element));
+        assert_eq!(
+            expected_constants.len(),
+            compiler.current_chunk().constants.len()
+        );
+        expected_constants.iter().all(|expected_element| {
+            compiler
+                .current_chunk()
+                .constants
+                .contains(expected_element)
+        });
 
         assert_eq!(
-            chunk.code,
+            compiler.current_chunk().code,
             vec![
                 OpCode::Constant as u8,
                 1u8, // stack.push('cafe au lait')
@@ -919,13 +955,12 @@ mod tests {
     #[test]
     fn compile_numeric_binary_unary() {
         let source = String::from("!(5 - 4 > 3 * 2 == !nil)");
-        let mut chunk = Chunk::new();
-        let mut compiler = Compiler::new(Scanner::new(source), &mut chunk);
+        let mut compiler = Compiler::new(Scanner::new(source), FunctionType::Script);
 
-        assert!(compiler.compile());
+        assert!(matches!(compiler.compile(), Some(_)));
 
         assert_eq!(
-            chunk.constants,
+            compiler.current_chunk().constants,
             vec![
                 Value::from_number(5f64),
                 Value::from_number(4f64),
@@ -935,7 +970,7 @@ mod tests {
         );
 
         assert_eq!(
-            chunk.code,
+            compiler.current_chunk().code,
             vec![
                 OpCode::Constant as u8,
                 0u8, // constant index
@@ -960,18 +995,16 @@ mod tests {
     #[test]
     fn invalid_assignment_target() {
         let source = String::from("a * b = c + d;");
-        let mut chunk = Chunk::new();
-        let mut compiler = Compiler::new(Scanner::new(source), &mut chunk);
+        let mut compiler = Compiler::new(Scanner::new(source), FunctionType::Script);
 
-        debug_assert!(!compiler.compile())
+        assert!(!matches!(compiler.compile(), Some(_)));
     }
 
     #[test]
     fn read_local_in_initialization() {
         let source = String::from("{ var cup = cup;}");
-        let mut chunk = Chunk::new();
-        let mut compiler = Compiler::new(Scanner::new(source), &mut chunk);
+        let mut compiler = Compiler::new(Scanner::new(source), FunctionType::Script);
 
-        debug_assert!(!compiler.compile())
+        assert!(!matches!(compiler.compile(), Some(_)));
     }
 }
