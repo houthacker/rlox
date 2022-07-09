@@ -4,8 +4,9 @@ use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
 
 use crate::vm::CallFrame;
+use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
-use std::{mem, ptr};
+use std::{mem, ptr, slice};
 
 pub struct UnsafeStack<T, const SIZE: usize> {
     ptr: NonNull<T>,
@@ -106,6 +107,20 @@ impl<T, const SIZE: usize> UnsafeStack<T, SIZE> {
             Some(p) => p,
             None => std::alloc::handle_alloc_error(layout),
         }
+    }
+}
+
+impl<T, const SIZE: usize> Deref for UnsafeStack<T, SIZE> {
+    type Target = [T];
+
+    fn deref(&self) -> &[T] {
+        unsafe { slice::from_raw_parts(self.ptr.as_ptr(), self.len()) }
+    }
+}
+
+impl<T, const SIZE: usize> DerefMut for UnsafeStack<T, SIZE> {
+    fn deref_mut(&mut self) -> &mut [T] {
+        unsafe { slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len()) }
     }
 }
 

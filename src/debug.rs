@@ -26,6 +26,7 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: InstructionIndex) -> Instr
 
     let instruction: u8 = chunk.code[offset];
     match OpCode::try_from(instruction) {
+        Ok(OpCode::Call) => byte_instruction(&OpCode::Call.to_string(), chunk, offset),
         Ok(OpCode::Constant) => constant_instruction(&OpCode::Constant.to_string(), chunk, offset),
         Ok(OpCode::ConstantLong) => {
             constant_long_instruction(&OpCode::ConstantLong.to_string(), chunk, offset)

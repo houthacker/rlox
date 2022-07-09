@@ -1,33 +1,49 @@
 #[cfg(feature = "rlox_debug")]
 use crate::debug::disassemble_instruction;
+use std::mem::MaybeUninit;
 
 use crate::object::{Obj, ObjFunction, ObjString};
 use crate::value::{as_bool, as_number, print_value, Value};
 use crate::{Compiler, OpCode};
 
 use crate::chunk::{IndexConverter, InstructionIndex};
-use crate::compiler::FunctionType;
+use crate::compiler::FunctionHandle;
 use crate::scanner::Scanner;
 use crate::stack::UnsafeStack;
 use crate::table::Table;
 
+/// The result of compiling and possibly executing a piece of code.
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
 #[derive(PartialEq)]
 pub enum InterpretResult {
+    /// The code was compiled and executed successfully.
     Ok,
+
+    /// An error occurred while compiling the code, and therefore it was not executed.
     CompileError,
+
+    /// After successful compilation, an error occurred while executing the compiled code.
     RuntimeError,
 }
 
+/// A frame or window for executing a function. It stores the absolute start index of the
+/// functions' locals within the VM stack. At compile time, only a relative index is known.
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
 pub struct CallFrame<const SIZE: usize> {
+    /// The function being executed. This is mainly used for
+    /// retrieving the functions' constants.
     function: *mut ObjFunction,
+
+    /// The instruction pointer of this function. This is used to jump back
+    /// to and resume execution when returning from a callee.
     ip: *mut u8,
-    slots: *mut UnsafeStack<Value, SIZE>,
+
+    /// A reference to the VM value stack, for storing the functions' locals.
+    slots: *mut [Value],
 }
 
 impl<const SIZE: usize> CallFrame<SIZE> {
-    pub fn new(function: &mut ObjFunction, slots: *mut UnsafeStack<Value, SIZE>) -> Self {
+    pub fn new(function: &mut ObjFunction, slots: &mut [Value]) -> Self {
         Self {
             function,
             ip: function.chunk.code.as_mut_ptr(),
@@ -52,26 +68,24 @@ impl<const SIZE: usize> CallFrame<SIZE> {
     }
 
     pub unsafe fn get_slot_at_unchecked(&mut self, index: InstructionIndex) -> &Value {
-        self.slots
-            .as_mut()
-            .unwrap_unchecked()
-            .get_at_unchecked(index)
+        &self.slots.as_ref().unwrap_unchecked()[index]
     }
 
     pub unsafe fn set_slot_at(&mut self, index: InstructionIndex, value: Value) {
-        self.slots
-            .as_mut()
-            .unwrap_unchecked()
-            .set_at_unchecked(index, value);
+        self.slots.as_mut().unwrap_unchecked()[index] = value;
     }
 }
 
+/// The maximum call stack size.
 const FRAMES_MAX: usize = 64;
+
+/// The maximum value stack size.
 const STACK_MAX: usize = FRAMES_MAX * u8::MAX as usize;
 
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
 pub struct VM {
     frames: UnsafeStack<CallFrame<STACK_MAX>, FRAMES_MAX>,
+    current_frame: MaybeUninit<*mut CallFrame<STACK_MAX>>,
     stack: UnsafeStack<Value, STACK_MAX>,
     globals: Table<ObjString, Value>,
     strings: Table<ObjString, Value>,
@@ -81,6 +95,7 @@ impl VM {
     pub fn new(strings: Table<ObjString, Value>) -> Self {
         Self {
             frames: UnsafeStack::new(),
+            current_frame: MaybeUninit::uninit(),
             stack: UnsafeStack::new(),
             globals: Table::new(),
             strings,
@@ -88,7 +103,7 @@ impl VM {
     }
 
     pub fn interpret(source: String) -> InterpretResult {
-        let mut compiler = Compiler::new(Scanner::new(source), FunctionType::Script);
+        let mut compiler = Compiler::new(Scanner::new(&source), FunctionHandle::default());
 
         match compiler.compile() {
             None => InterpretResult::CompileError,
@@ -96,9 +111,7 @@ impl VM {
                 let mut vm = VM::new(string_cache);
                 vm.stack.push(Value::from_obj(Obj::Function(function)));
 
-                let call_frame = CallFrame::new(function, &mut vm.stack);
-                vm.frames.push(call_frame);
-
+                vm.call(function, 0);
                 unsafe { vm.run() }
             }
         }
@@ -106,12 +119,12 @@ impl VM {
 
     unsafe fn run(&mut self) -> InterpretResult {
         loop {
+            self.current_frame =
+                MaybeUninit::new(self.frames.get_at_unchecked_mut(self.frames.len() - 1));
             if cfg!(feature = "rlox_debug") {
-                let call_frame = self.frames.get_at_unchecked_mut(self.frames.len() - 1);
-
                 // Disassemble current instruction
-                let offset = VM::get_offset(call_frame);
-                disassemble_instruction(&call_frame.get_function().chunk, offset);
+                let offset = VM::get_offset(self.get_current_frame_mut());
+                disassemble_instruction(&self.get_current_frame_mut().get_function().chunk, offset);
             }
 
             let opcode = OpCode::try_from(self.read_byte());
@@ -133,10 +146,18 @@ impl VM {
                         return InterpretResult::RuntimeError;
                     }
                 }
+                OpCode::Call => {
+                    let argc = self.read_byte();
+                    if !self.call_value(argc as usize, argc) {
+                        return InterpretResult::RuntimeError;
+                    }
+                    self.current_frame =
+                        MaybeUninit::new(self.frames.get_at_unchecked_mut(self.frames.len() - 1));
+                }
                 OpCode::Constant => {
                     let index = self.read_byte();
-                    let call_frame = self.frames.get_at_unchecked_mut(self.frames.len() - 1);
-                    let value = call_frame
+                    let value = self
+                        .get_current_frame_mut()
                         .get_function()
                         .chunk
                         .read_constant(index as usize);
@@ -144,8 +165,11 @@ impl VM {
                 }
                 OpCode::ConstantLong => {
                     let index = self.read_long_index();
-                    let call_frame = self.frames.get_at_unchecked_mut(self.frames.len() - 1);
-                    let value = call_frame.get_function().chunk.read_constant(index);
+                    let value = self
+                        .get_current_frame_mut()
+                        .get_function()
+                        .chunk
+                        .read_constant(index);
                     self.stack.push(value);
                 }
                 OpCode::DefineGlobal => {
@@ -208,14 +232,12 @@ impl VM {
                 }
                 OpCode::Jump => {
                     let offset = self.read_short();
-                    let call_frame = self.frames.get_at_unchecked_mut(self.frames.len() - 1);
-                    call_frame.increment_ip(offset as usize);
+                    self.get_current_frame_mut().increment_ip(offset as usize);
                 }
                 OpCode::JumpIfFalse => {
                     let offset = self.read_short();
                     if VM::is_falsey(self.stack.peek(0).unwrap()) {
-                        let call_frame = self.frames.get_at_unchecked_mut(self.frames.len() - 1);
-                        call_frame.increment_ip(offset as usize);
+                        self.get_current_frame_mut().increment_ip(offset as usize);
                     }
                 }
                 OpCode::Less => {
@@ -227,8 +249,7 @@ impl VM {
                 }
                 OpCode::Loop => {
                     let offset = self.read_short();
-                    let call_frame = self.frames.get_at_unchecked_mut(self.frames.len() - 1);
-                    call_frame.decrement_ip(offset as usize);
+                    self.get_current_frame_mut().decrement_ip(offset as usize);
                 }
                 OpCode::Multiply => {
                     if self.validate_two_operands(Value::is_number, "Operands must be numbers.") {
@@ -298,6 +319,44 @@ impl VM {
         }
     }
 
+    unsafe fn get_current_frame_mut(&mut self) -> &mut CallFrame<STACK_MAX> {
+        self.current_frame.assume_init().as_mut().unwrap_unchecked()
+    }
+
+    fn call(&mut self, function: &mut ObjFunction, arg_count: u8) -> bool {
+        if arg_count != function.arity {
+            self.runtime_error(&format!(
+                "Expect {} arguments but got {}.",
+                function.arity, arg_count
+            ));
+            return false;
+        }
+
+        if self.frames.len() == FRAMES_MAX {
+            self.runtime_error("Stack overflow.");
+            return false;
+        }
+
+        let start_idx = self.stack.len() - arg_count as usize - 1;
+        let call_frame = CallFrame::new(function, &mut self.stack[start_idx..]);
+
+        self.frames.push(call_frame);
+        true
+    }
+
+    fn call_value(&mut self, distance: usize, arg_count: u8) -> bool {
+        let callee = unsafe { self.stack.peek(distance).unwrap_unchecked() };
+
+        if Value::is_obj(callee) {
+            if let Value::Obj(Obj::Function(function)) = callee {
+                return self.call(unsafe { function.as_mut().unwrap_unchecked() }, arg_count);
+            }
+        }
+
+        self.runtime_error("Can only call functions and classes.");
+        false
+    }
+
     unsafe fn stack_pop_two_unchecked(&mut self) -> (Value, Value) {
         (
             self.stack.pop().unwrap_unchecked(),
@@ -356,12 +415,21 @@ impl VM {
 
     fn runtime_error(&mut self, message: &str) {
         eprintln!("{}", message);
-        unsafe {
-            let call_frame = self.frames.get_at_unchecked_mut(self.frames.len() - 1);
-            let chunk = &call_frame.get_function().chunk;
-            let offset = VM::get_offset(call_frame);
-            let line = chunk.get_line(offset);
-            eprintln!("[line {}] in script", line.no);
+
+        for idx in (0..self.frames.len()).rev() {
+            unsafe {
+                let call_frame = self.frames.get_at_unchecked_mut(idx);
+                let function = call_frame.function.as_ref().unwrap_unchecked();
+                let chunk = &call_frame.get_function().chunk;
+                let offset = VM::get_offset(call_frame);
+                let line = chunk.get_line(offset);
+                eprint!("[line {}] in ", line.no);
+                if let Some(function_name) = function.name {
+                    eprintln!("{}", (*function_name).data);
+                } else {
+                    eprintln!("script");
+                }
+            }
         }
 
         self.stack.reset();
@@ -596,5 +664,20 @@ mod tests {
         let source =
             String::from("if (true or false) { print \"true\"; } else { print \"false\"; }");
         assert_eq!(VM::interpret(source), InterpretResult::Ok);
+    }
+
+    #[test]
+    fn print_stack_trace() {
+        let source = String::from(
+            "fun a() { b(); }\
+        fun b() { c(); }\
+        fun c() { \
+            c(\"too\", \"many\"); \
+            }\
+        \
+        a();",
+        );
+
+        assert_eq!(VM::interpret(source), InterpretResult::RuntimeError);
     }
 }

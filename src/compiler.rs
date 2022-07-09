@@ -1,4 +1,4 @@
-use crate::chunk::{IndexConverter, InstructionIndex};
+use crate::chunk::{ConstantIndex, IndexConverter, InstructionIndex};
 use std::alloc::Layout;
 
 #[cfg(feature = "rlox_debug")]
@@ -132,9 +132,15 @@ impl FunctionHandle {
     }
 }
 
+impl Default for FunctionHandle {
+    fn default() -> Self {
+        FunctionHandle::new(ObjFunction::new_unnamed(), FunctionType::Script)
+    }
+}
+
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
-pub struct Compiler {
-    scanner: Scanner,
+pub struct Compiler<'a> {
+    scanner: Scanner<'a>,
     string_cache: Table<ObjString, Value>,
     current_token: MaybeUninit<Token>,
     previous_token: MaybeUninit<Token>,
@@ -146,14 +152,14 @@ pub struct Compiler {
     panic_mode: bool,
 }
 
-impl Compiler {
-    pub fn new(scanner: Scanner, function_kind: FunctionType) -> Self {
+impl<'a> Compiler<'a> {
+    pub fn new(scanner: Scanner<'a>, function_handle: FunctionHandle) -> Self {
         let instance = Self {
             scanner,
             string_cache: Table::new(),
             current_token: MaybeUninit::uninit(),
             previous_token: MaybeUninit::uninit(),
-            function_handle: FunctionHandle::new(ObjFunction::new_unnamed(), function_kind),
+            function_handle,
             locals: allocate_locals(),
             locals_count: 0,
             locals_scope_depth: 0,
@@ -187,7 +193,7 @@ impl Compiler {
             TokenType::Greater      => ParseRule(None,          Some(binary),   Precedence::Comparison),
             TokenType::GreaterEqual => ParseRule(None,          Some(binary),   Precedence::Comparison),
             TokenType::Identifier   => ParseRule(Some(variable),None,           Precedence::None),
-            TokenType::LeftParen    => ParseRule(Some(grouping),None,           Precedence::None),
+            TokenType::LeftParen    => ParseRule(Some(grouping),Some(call),     Precedence::Call),
             TokenType::Less         => ParseRule(None,          Some(binary),   Precedence::Comparison),
             TokenType::LessEqual    => ParseRule(None,          Some(binary),   Precedence::Comparison),
             TokenType::Minus        => ParseRule(Some(unary),   Some(binary),   Precedence::Term),
@@ -512,6 +518,10 @@ impl Compiler {
 
     fn mark_initialized(&mut self) {
         let depth = self.locals_scope_depth;
+        if depth == 0 {
+            return;
+        }
+
         match unsafe { self.local_at_mut(self.locals_count - 1) } {
             Some(local) => local.depth = LocalDepth::Initialized(depth),
             None => (),
@@ -542,6 +552,26 @@ impl Compiler {
         }
     }
 
+    fn argument_list(&mut self) -> u8 {
+        let mut argc = 0u8;
+        if !self.check_token_type(TokenType::RightParen) {
+            loop {
+                self.expression();
+                if argc == 255 {
+                    self.error("Can't have more than 255 arguments");
+                }
+                argc += 1;
+
+                if !self.match_token_type(TokenType::Comma) {
+                    break;
+                }
+            }
+        }
+
+        self.consume(TokenType::RightParen, "Expect ')' after arguments.");
+        argc
+    }
+
     fn expression(&mut self) {
         self.parse_precedence(Precedence::Assignment);
     }
@@ -554,6 +584,59 @@ impl Compiler {
         }
 
         self.consume(TokenType::RightBrace, "Expect '}' after block.");
+    }
+
+    fn function(&mut self, function_type: FunctionType) -> ConstantIndex {
+        let function_handle = match function_type {
+            FunctionType::Script => FunctionHandle::new(ObjFunction::new_unnamed(), function_type),
+            FunctionType::Function => FunctionHandle::new(
+                ObjFunction::new(ObjString::copy_string_interned(
+                    unsafe { &self.previous_token.assume_init_ref().lexeme },
+                    &mut self.string_cache,
+                )),
+                function_type,
+            ),
+        };
+
+        let mut compiler = Compiler::new(
+            Scanner::from_current_position(&self.scanner),
+            function_handle,
+        );
+        compiler.begin_scope();
+
+        compiler.consume(TokenType::LeftParen, "Expect '(' after function name.");
+        if !compiler.check_token_type(TokenType::RightParen) {
+            loop {
+                if compiler.function_handle.function.arity == 255 {
+                    compiler.error_at_current("Can't have more than 255 parameters.")
+                } else {
+                    compiler.function_handle.function.arity += 1;
+                }
+
+                let index = compiler.parse_variable("Expect parameter name.");
+                compiler.define_variable(index);
+
+                if !compiler.match_token_type(TokenType::Comma) {
+                    break;
+                }
+            }
+        }
+        compiler.consume(TokenType::RightParen, "Expect ')' after parameters.");
+        compiler.consume(TokenType::LeftBrace, "Expect '{' before function body.");
+        compiler.block();
+
+        let function = compiler.end_compiler();
+        let value = Value::from_obj(Obj::Function(function));
+
+        let ln = unsafe { compiler.previous_token.assume_init_ref().line };
+        self.current_chunk().write_constant(value, ln)
+    }
+
+    fn fun_declaration(&mut self) {
+        let global_index = self.parse_variable("Expect function name.");
+        self.mark_initialized();
+        self.function(FunctionType::Function);
+        self.define_variable(global_index);
     }
 
     fn var_declaration(&mut self) {
@@ -683,7 +766,9 @@ impl Compiler {
     }
 
     fn declaration(&mut self) {
-        if self.match_token_type(TokenType::Var) {
+        if self.match_token_type(TokenType::Fun) {
+            self.fun_declaration();
+        } else if self.match_token_type(TokenType::Var) {
             self.var_declaration();
         } else {
             self.statement();
@@ -799,6 +884,11 @@ fn binary(compiler: &mut Compiler) {
     }
 }
 
+fn call(compiler: &mut Compiler) {
+    let arg_count = compiler.argument_list();
+    compiler.emit_bytes(OpCode::Call as u8, arg_count);
+}
+
 fn literal(compiler: &mut Compiler, _can_assign: bool) {
     match unsafe { compiler.previous_token.assume_init_ref() }.kind {
         TokenType::False => compiler.emit_opcode(OpCode::False),
@@ -888,7 +978,7 @@ mod tests {
     #[test]
     fn compile_with_global_variables() {
         let source = String::from("var beverage = \"cafe au lait\";\nvar breakfast = \"beignets with \" + beverage;\nprint breakfast;");
-        let mut compiler = Compiler::new(Scanner::new(source), FunctionType::Script);
+        let mut compiler = Compiler::new(Scanner::new(&source), FunctionHandle::default());
 
         assert!(matches!(compiler.compile(), Some(_)));
 
@@ -955,7 +1045,7 @@ mod tests {
     #[test]
     fn compile_numeric_binary_unary() {
         let source = String::from("!(5 - 4 > 3 * 2 == !nil)");
-        let mut compiler = Compiler::new(Scanner::new(source), FunctionType::Script);
+        let mut compiler = Compiler::new(Scanner::new(&source), FunctionHandle::default());
 
         assert!(matches!(compiler.compile(), Some(_)));
 
@@ -995,7 +1085,7 @@ mod tests {
     #[test]
     fn invalid_assignment_target() {
         let source = String::from("a * b = c + d;");
-        let mut compiler = Compiler::new(Scanner::new(source), FunctionType::Script);
+        let mut compiler = Compiler::new(Scanner::new(&source), FunctionHandle::default());
 
         assert!(!matches!(compiler.compile(), Some(_)));
     }
@@ -1003,7 +1093,7 @@ mod tests {
     #[test]
     fn read_local_in_initialization() {
         let source = String::from("{ var cup = cup;}");
-        let mut compiler = Compiler::new(Scanner::new(source), FunctionType::Script);
+        let mut compiler = Compiler::new(Scanner::new(&source), FunctionHandle::default());
 
         assert!(!matches!(compiler.compile(), Some(_)));
     }

@@ -72,21 +72,25 @@ impl Clone for Token {
 }
 
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
-pub struct Scanner {
-    source: String,
+pub struct Scanner<'a> {
+    source: &'a str,
     start: usize,
     current: usize,
     line: LineNumber,
 }
 
-impl Scanner {
-    pub fn new(source: String) -> Self {
+impl<'a> Scanner<'a> {
+    pub fn new(source: &'a str) -> Self {
         Self {
             source,
             start: 0,
             current: 0,
             line: 1,
         }
+    }
+
+    pub fn from_current_position(instance: &Self) -> Self {
+        Self::new(&instance.source[instance.current..])
     }
 
     pub fn scan_token(&mut self) -> Token {
@@ -304,7 +308,7 @@ impl Scanner {
                     match bytes[1] {
                         x if x == b'a' => self.check_keyword(lexeme, 2, "lse", TokenType::False),
                         x if x == b'o' => self.check_keyword(lexeme, 2, "r", TokenType::For),
-                        x if x == b'u' => self.check_keyword(lexeme, 2, "un", TokenType::Fun),
+                        x if x == b'u' => self.check_keyword(lexeme, 2, "n", TokenType::Fun),
                         _ => TokenType::Identifier,
                     }
                 } else {
@@ -385,7 +389,7 @@ mod tests {
     #[test]
     fn scan_numeric_binary_unary() {
         let source = String::from("!(5 - 4 > 3 * 2 == !nil)");
-        let mut scanner = Scanner::new(source);
+        let mut scanner = Scanner::new(&source);
 
         let mut token = scanner.scan_token();
         assert_eq!(token.kind, TokenType::Bang);

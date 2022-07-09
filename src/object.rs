@@ -63,7 +63,7 @@ pub trait Hashed {
 
 #[cfg_attr(feature = "rlox_debug", derive(Debug))]
 pub struct ObjFunction {
-    pub arity: u32,
+    pub arity: u8,
     pub chunk: Chunk,
     pub name: Option<*const ObjString>,
 }

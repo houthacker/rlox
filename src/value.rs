@@ -98,6 +98,10 @@ impl Value {
         matches!(value, &Value::Number(_))
     }
 
+    pub fn is_obj(value: &Value) -> bool {
+        matches!(value, &Value::Obj(_))
+    }
+
     pub fn is_string(value: &Value) -> bool {
         matches!(value, Value::Obj(Obj::String(_not_used)))
     }
